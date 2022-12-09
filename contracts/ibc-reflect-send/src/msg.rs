@@ -1,22 +1,17 @@
-#![allow(clippy::field_reassign_with_default)] // see https://github.com/CosmWasm/cosmwasm/issues/685
-
-use cosmwasm_std::{Coin, CosmosMsg, Empty, HumanAddr};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use cosmwasm_schema::{cw_serde, QueryResponses};
+use cosmwasm_std::{Coin, CosmosMsg, Empty, Timestamp};
 
 use crate::state::AccountData;
 
-/// InitMsg needs no info. Owner of the contract is whoever signed the InitMsg
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct InitMsg {}
+/// This needs no info. Owner of the contract is whoever signed the InstantiateMsg.
+#[cw_serde]
+pub struct InstantiateMsg {}
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HandleMsg {
+#[cw_serde]
+pub enum ExecuteMsg {
     /// Changes the admin
     UpdateAdmin {
-        admin: HumanAddr,
+        admin: String,
     },
     SendMsgs {
         channel_id: String,
@@ -39,35 +34,38 @@ pub enum HandleMsg {
     },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
+#[derive(QueryResponses)]
 pub enum QueryMsg {
     // Returns current admin
+    #[returns(AdminResponse)]
     Admin {},
     // Shows all open accounts (incl. remote info)
+    #[returns(ListAccountsResponse)]
     ListAccounts {},
     // Get account for one channel
+    #[returns(AccountInfo)]
     Account { channel_id: String },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct AdminResponse {
-    pub admin: HumanAddr,
+    pub admin: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct ListAccountsResponse {
     pub accounts: Vec<AccountInfo>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct AccountInfo {
     pub channel_id: String,
     /// last block balance was updated (0 is never)
-    pub last_update_time: u64,
+    pub last_update_time: Timestamp,
     /// in normal cases, it should be set, but there is a delay between binding
     /// the channel and making a query and in that time it is empty
-    pub remote_addr: Option<HumanAddr>,
+    pub remote_addr: Option<String>,
     pub remote_balance: Vec<Coin>,
 }
 
@@ -82,13 +80,13 @@ impl AccountInfo {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct AccountResponse {
     /// last block balance was updated (0 is never)
-    pub last_update_time: u64,
+    pub last_update_time: Timestamp,
     /// in normal cases, it should be set, but there is a delay between binding
     /// the channel and making a query and in that time it is empty
-    pub remote_addr: Option<HumanAddr>,
+    pub remote_addr: Option<String>,
     pub remote_balance: Vec<Coin>,
 }
 

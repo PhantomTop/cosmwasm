@@ -17,28 +17,31 @@
 //!      });
 //! 4. Anywhere you see query(&deps, ...) you must replace it with query(&mut deps, ...)
 
-use cosmwasm_std::{from_binary, from_slice, HumanAddr, MessageInfo, Response};
+use cosmwasm_std::{from_binary, from_slice, MessageInfo, Response};
 use cosmwasm_vm::{
     testing::{
-        handle, init, migrate, mock_env, mock_info, mock_instance_with_gas_limit, query, MockApi,
-        MockQuerier, MockStorage,
+        execute, instantiate, migrate, mock_env, mock_info, mock_instance_with_gas_limit, query,
+        MockApi, MockQuerier, MockStorage,
     },
     Instance,
 };
 
-use queue::contract::{
-    CountResponse, HandleMsg, Item, ListResponse, QueryMsg, ReducerResponse, SumResponse,
+use queue::msg::{
+    CountResponse, ExecuteMsg, InstantiateMsg, ListResponse, MigrateMsg, QueryMsg, ReducerResponse,
+    SumResponse,
 };
-use queue::msg::{InitMsg, MigrateMsg};
+use queue::state::Item;
 
 static WASM: &[u8] = include_bytes!("../target/wasm32-unknown-unknown/release/queue.wasm");
 
+/// Instantiates a contract with no elements
 fn create_contract() -> (Instance<MockApi, MockStorage, MockQuerier>, MessageInfo) {
-    let gas_limit = 500_000_000; // enough for many executions within one instance
+    let gas_limit = 1_000_000_000_000; // ~1ms, enough for many executions within one instance
     let mut deps = mock_instance_with_gas_limit(WASM, gas_limit);
-    let creator = HumanAddr(String::from("creator"));
-    let info = mock_info(creator.as_str(), &[]);
-    let res: Response = init(&mut deps, mock_env(), info.clone(), InitMsg {}).unwrap();
+    let creator = String::from("creator");
+    let info = mock_info(&creator, &[]);
+    let res: Response =
+        instantiate(&mut deps, mock_env(), info.clone(), InstantiateMsg {}).unwrap();
     assert_eq!(0, res.messages.len());
     (deps, info)
 }
@@ -56,7 +59,7 @@ fn get_sum(deps: &mut Instance<MockApi, MockStorage, MockQuerier>) -> i32 {
 }
 
 #[test]
-fn init_and_query() {
+fn instantiate_and_query() {
     let (mut deps, _) = create_contract();
     assert_eq!(get_count(&mut deps), 0);
     assert_eq!(get_sum(&mut deps), 0);
@@ -65,11 +68,11 @@ fn init_and_query() {
 #[test]
 fn push_and_query() {
     let (mut deps, info) = create_contract();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info,
-        HandleMsg::Enqueue { value: 25 },
+        ExecuteMsg::Enqueue { value: 25 },
     )
     .unwrap();
     assert_eq!(get_count(&mut deps), 1);
@@ -79,25 +82,25 @@ fn push_and_query() {
 #[test]
 fn multiple_push() {
     let (mut deps, info) = create_contract();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 25 },
+        ExecuteMsg::Enqueue { value: 25 },
     )
     .unwrap();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 35 },
+        ExecuteMsg::Enqueue { value: 35 },
     )
     .unwrap();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info,
-        HandleMsg::Enqueue { value: 45 },
+        ExecuteMsg::Enqueue { value: 45 },
     )
     .unwrap();
     assert_eq!(get_count(&mut deps), 3);
@@ -107,21 +110,21 @@ fn multiple_push() {
 #[test]
 fn push_and_pop() {
     let (mut deps, info) = create_contract();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 25 },
+        ExecuteMsg::Enqueue { value: 25 },
     )
     .unwrap();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 17 },
+        ExecuteMsg::Enqueue { value: 17 },
     )
     .unwrap();
-    let res: Response = handle(&mut deps, mock_env(), info, HandleMsg::Dequeue {}).unwrap();
+    let res: Response = execute(&mut deps, mock_env(), info, ExecuteMsg::Dequeue {}).unwrap();
     // ensure we popped properly
     assert!(res.data.is_some());
     let data = res.data.unwrap();
@@ -135,32 +138,32 @@ fn push_and_pop() {
 #[test]
 fn push_and_reduce() {
     let (mut deps, info) = create_contract();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 40 },
+        ExecuteMsg::Enqueue { value: 40 },
     )
     .unwrap();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 15 },
+        ExecuteMsg::Enqueue { value: 15 },
     )
     .unwrap();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 85 },
+        ExecuteMsg::Enqueue { value: 85 },
     )
     .unwrap();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info,
-        HandleMsg::Enqueue { value: -10 },
+        ExecuteMsg::Enqueue { value: -10 },
     )
     .unwrap();
     assert_eq!(get_count(&mut deps), 4);
@@ -174,18 +177,18 @@ fn push_and_reduce() {
 fn migrate_works() {
     let (mut deps, info) = create_contract();
 
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info.clone(),
-        HandleMsg::Enqueue { value: 25 },
+        ExecuteMsg::Enqueue { value: 25 },
     )
     .unwrap();
-    let _: Response = handle(
+    let _: Response = execute(
         &mut deps,
         mock_env(),
         info,
-        HandleMsg::Enqueue { value: 17 },
+        ExecuteMsg::Enqueue { value: 17 },
     )
     .unwrap();
     assert_eq!(get_count(&mut deps), 2);
@@ -204,17 +207,17 @@ fn query_list() {
     let (mut deps, info) = create_contract();
 
     for _ in 0..0x25 {
-        let _: Response = handle(
+        let _: Response = execute(
             &mut deps,
             mock_env(),
             info.clone(),
-            HandleMsg::Enqueue { value: 40 },
+            ExecuteMsg::Enqueue { value: 40 },
         )
         .unwrap();
     }
     for _ in 0..0x19 {
         let _: Response =
-            handle(&mut deps, mock_env(), info.clone(), HandleMsg::Dequeue {}).unwrap();
+            execute(&mut deps, mock_env(), info.clone(), ExecuteMsg::Dequeue {}).unwrap();
     }
     // we add 0x25 items and then remove the first 0x19, leaving [0x19, 0x1a, 0x1b, ..., 0x24]
     // since we count up to 0x20 in early, we get early and late both with data
@@ -224,4 +227,18 @@ fn query_list() {
     assert_eq!(ids.empty, Vec::<u32>::new());
     assert_eq!(ids.early, vec![0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f]);
     assert_eq!(ids.late, vec![0x20, 0x21, 0x22, 0x23, 0x24]);
+}
+
+#[test]
+fn query_open_iterators() {
+    let (mut deps, _info) = create_contract();
+
+    let query_msg = QueryMsg::OpenIterators { count: 0 };
+    let _ = query(&mut deps, mock_env(), query_msg).unwrap();
+
+    let query_msg = QueryMsg::OpenIterators { count: 1 };
+    let _ = query(&mut deps, mock_env(), query_msg).unwrap();
+
+    let query_msg = QueryMsg::OpenIterators { count: 321 };
+    let _ = query(&mut deps, mock_env(), query_msg).unwrap();
 }

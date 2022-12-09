@@ -13,7 +13,7 @@ pub const REQUIRED_IBC_EXPORTS: &[&str] = &[
 ];
 
 pub fn deserialize_wasm(wasm_code: &[u8]) -> VmResult<Module> {
-    deserialize_buffer(&wasm_code).map_err(|err| {
+    deserialize_buffer(wasm_code).map_err(|err| {
         VmError::static_validation_err(format!(
             "Wasm bytecode could not be deserialized. Deserialization error: \"{}\"",
             err
@@ -21,26 +21,62 @@ pub fn deserialize_wasm(wasm_code: &[u8]) -> VmResult<Module> {
     })
 }
 
-pub fn exported_functions(module: &Module) -> HashSet<String> {
-    module
-        .export_section()
-        .map_or(HashSet::default(), |export_section| {
-            export_section
-                .entries()
-                .iter()
-                .filter_map(|entry| match entry.internal() {
-                    Internal::Function(_) => Some(entry.field().to_string()),
-                    _ => None,
-                })
-                .collect()
-        })
+/// A trait that allows accessing shared functionality of `parity_wasm::elements::Module`
+/// and `wasmer::Module` in a shared fashion.
+pub trait ExportInfo {
+    /// Returns all exported function names with the given prefix
+    fn exported_function_names(&self, prefix: Option<&str>) -> HashSet<String>;
+}
+
+impl ExportInfo for Module {
+    fn exported_function_names(&self, prefix: Option<&str>) -> HashSet<String> {
+        self.export_section()
+            .map_or(HashSet::default(), |export_section| {
+                export_section
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| match entry.internal() {
+                        Internal::Function(_) => Some(entry.field()),
+                        _ => None,
+                    })
+                    .filter(|name| {
+                        if let Some(required_prefix) = prefix {
+                            name.starts_with(required_prefix)
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|name| name.to_string())
+                    .collect()
+            })
+    }
+}
+
+impl ExportInfo for wasmer::Module {
+    fn exported_function_names(&self, prefix: Option<&str>) -> HashSet<String> {
+        self.exports()
+            .functions()
+            .filter_map(|function_export| {
+                let name = function_export.name();
+                if let Some(required_prefix) = prefix {
+                    if name.starts_with(required_prefix) {
+                        Some(name.to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(name.to_string())
+                }
+            })
+            .collect()
+    }
 }
 
 /// Returns true if and only if all IBC entry points ([`REQUIRED_IBC_EXPORTS`])
 /// exist as exported functions. This does not guarantee the entry points
 /// are functional and for simplicity does not even check their signatures.
-pub fn has_ibc_entry_points(module: &Module) -> bool {
-    let available_exports = exported_functions(module);
+pub fn has_ibc_entry_points(module: &impl ExportInfo) -> bool {
+    let available_exports = module.exported_function_names(None);
     REQUIRED_IBC_EXPORTS
         .iter()
         .all(|required| available_exports.contains(*required))
@@ -50,7 +86,7 @@ pub fn has_ibc_entry_points(module: &Module) -> bool {
 mod tests {
     use super::*;
     use parity_wasm::elements::Internal;
-    use std::iter::FromIterator;
+    use wasmer::{Cranelift, Store, Universal};
 
     static CONTRACT: &[u8] = include_bytes!("../testdata/hackatom.wasm");
     static CORRUPTED: &[u8] = include_bytes!("../testdata/corrupted.wasm");
@@ -60,33 +96,20 @@ mod tests {
         let module = deserialize_wasm(CONTRACT).unwrap();
         assert_eq!(module.version(), 1);
 
-        let exported_functions =
-            module
-                .export_section()
-                .unwrap()
-                .entries()
-                .iter()
-                .filter(|entry| {
-                    if let Internal::Function(_) = entry.internal() {
-                        true
-                    } else {
-                        false
-                    }
-                });
-        assert_eq!(exported_functions.count(), 8); // 6 required export plus "migrate" and "system"
+        let exported_functions = module
+            .export_section()
+            .unwrap()
+            .entries()
+            .iter()
+            .filter(|entry| matches!(entry.internal(), Internal::Function(_)));
+        assert_eq!(exported_functions.count(), 8); // 4 required exports plus "execute", "migrate", "query" and "sudo"
 
         let exported_memories = module
             .export_section()
             .unwrap()
             .entries()
             .iter()
-            .filter(|entry| {
-                if let Internal::Memory(_) = entry.internal() {
-                    true
-                } else {
-                    false
-                }
-            });
+            .filter(|entry| matches!(entry.internal(), Internal::Memory(_)));
         assert_eq!(exported_memories.count(), 1);
     }
 
@@ -101,10 +124,10 @@ mod tests {
     }
 
     #[test]
-    fn exported_functions_works() {
+    fn exported_function_names_works_for_parity_with_no_prefix() {
         let wasm = wat::parse_str(r#"(module)"#).unwrap();
         let module = deserialize_wasm(&wasm).unwrap();
-        let exports = exported_functions(&module);
+        let exports = module.exported_function_names(None);
         assert_eq!(exports, HashSet::new());
 
         let wasm = wat::parse_str(
@@ -120,10 +143,97 @@ mod tests {
         )
         .unwrap();
         let module = deserialize_wasm(&wasm).unwrap();
-        let exports = exported_functions(&module);
+        let exports = module.exported_function_names(None);
         assert_eq!(
             exports,
-            HashSet::from_iter(vec!["foo".to_string(), "bar".to_string(),])
+            HashSet::from_iter(vec!["foo".to_string(), "bar".to_string()])
+        );
+    }
+
+    #[test]
+    fn exported_function_names_works_for_parity_with_prefix() {
+        let wasm = wat::parse_str(r#"(module)"#).unwrap();
+        let module = deserialize_wasm(&wasm).unwrap();
+        let exports = module.exported_function_names(Some("b"));
+        assert_eq!(exports, HashSet::new());
+
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory 3)
+                (export "memory" (memory 0))
+
+                (type (func))
+                (func (type 0) nop)
+                (export "foo" (func 0))
+                (export "bar" (func 0))
+                (export "baz" (func 0))
+            )"#,
+        )
+        .unwrap();
+        let module = deserialize_wasm(&wasm).unwrap();
+        let exports = module.exported_function_names(Some("b"));
+        assert_eq!(
+            exports,
+            HashSet::from_iter(vec!["bar".to_string(), "baz".to_string()])
+        );
+    }
+
+    #[test]
+    fn exported_function_names_works_for_wasmer_with_no_prefix() {
+        let wasm = wat::parse_str(r#"(module)"#).unwrap();
+        let store = Store::new(&Universal::new(Cranelift::default()).engine());
+        let module = wasmer::Module::new(&store, wasm).unwrap();
+        let exports = module.exported_function_names(None);
+        assert_eq!(exports, HashSet::new());
+
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory 3)
+                (export "memory" (memory 0))
+
+                (type (func))
+                (func (type 0) nop)
+                (export "foo" (func 0))
+                (export "bar" (func 0))
+            )"#,
+        )
+        .unwrap();
+        let store = Store::new(&Universal::new(Cranelift::default()).engine());
+        let module = wasmer::Module::new(&store, wasm).unwrap();
+        let exports = module.exported_function_names(None);
+        assert_eq!(
+            exports,
+            HashSet::from_iter(vec!["foo".to_string(), "bar".to_string()])
+        );
+    }
+
+    #[test]
+    fn exported_function_names_works_for_wasmer_with_prefix() {
+        let wasm = wat::parse_str(r#"(module)"#).unwrap();
+        let store = Store::new(&Universal::new(Cranelift::default()).engine());
+        let module = wasmer::Module::new(&store, wasm).unwrap();
+        let exports = module.exported_function_names(Some("b"));
+        assert_eq!(exports, HashSet::new());
+
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory 3)
+                (export "memory" (memory 0))
+
+                (type (func))
+                (func (type 0) nop)
+                (export "foo" (func 0))
+                (export "bar" (func 0))
+                (export "baz" (func 0))
+            )"#,
+        )
+        .unwrap();
+        let store = Store::new(&Universal::new(Cranelift::default()).engine());
+        let module = wasmer::Module::new(&store, wasm).unwrap();
+        let exports = module.exported_function_names(Some("b"));
+        assert_eq!(
+            exports,
+            HashSet::from_iter(vec!["bar".to_string(), "baz".to_string()])
         );
     }
 
@@ -137,16 +247,15 @@ mod tests {
 
                 (type (func))
                 (func (type 0) nop)
-                (export "interface_version_5" (func 0))
-                (export "init" (func 0))
-                (export "handle" (func 0))
+                (export "interface_version_8" (func 0))
+                (export "instantiate" (func 0))
                 (export "allocate" (func 0))
                 (export "deallocate" (func 0))
             )"#,
         )
         .unwrap();
         let module = deserialize_wasm(&wasm).unwrap();
-        assert_eq!(has_ibc_entry_points(&module), false);
+        assert!(!has_ibc_entry_points(&module));
 
         // IBC contract
         let wasm = wat::parse_str(
@@ -156,9 +265,9 @@ mod tests {
 
                 (type (func))
                 (func (type 0) nop)
-                (export "interface_version_5" (func 0))
-                (export "init" (func 0))
-                (export "handle" (func 0))
+                (export "interface_version_8" (func 0))
+                (export "instantiate" (func 0))
+                (export "execute" (func 0))
                 (export "allocate" (func 0))
                 (export "deallocate" (func 0))
                 (export "ibc_channel_open" (func 0))
@@ -171,7 +280,7 @@ mod tests {
         )
         .unwrap();
         let module = deserialize_wasm(&wasm).unwrap();
-        assert_eq!(has_ibc_entry_points(&module), true);
+        assert!(has_ibc_entry_points(&module));
 
         // Missing packet ack
         let wasm = wat::parse_str(
@@ -181,9 +290,9 @@ mod tests {
 
                 (type (func))
                 (func (type 0) nop)
-                (export "interface_version_5" (func 0))
-                (export "init" (func 0))
-                (export "handle" (func 0))
+                (export "interface_version_8" (func 0))
+                (export "instantiate" (func 0))
+                (export "execute" (func 0))
                 (export "allocate" (func 0))
                 (export "deallocate" (func 0))
                 (export "ibc_channel_open" (func 0))
@@ -195,6 +304,6 @@ mod tests {
         )
         .unwrap();
         let module = deserialize_wasm(&wasm).unwrap();
-        assert_eq!(has_ibc_entry_points(&module), false);
+        assert!(!has_ibc_entry_points(&module));
     }
 }

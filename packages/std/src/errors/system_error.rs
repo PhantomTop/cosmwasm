@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Binary, HumanAddr};
+use crate::Binary;
 
 /// SystemError is used for errors inside the VM and is API friendly (i.e. serializable).
 ///
@@ -12,15 +12,26 @@ use crate::{Binary, HumanAddr};
 ///
 /// Such errors are only created by the VM. The error type is defined in the standard library, to ensure
 /// the contract understands the error format without creating a dependency on cosmwasm-vm.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SystemError {
-    InvalidRequest { error: String, request: Binary },
-    InvalidResponse { error: String, response: Binary },
-    NoSuchContract { addr: HumanAddr },
+    InvalidRequest {
+        error: String,
+        request: Binary,
+    },
+    InvalidResponse {
+        error: String,
+        response: Binary,
+    },
+    NoSuchContract {
+        /// The address that was attempted to query
+        addr: String,
+    },
     Unknown {},
-    UnsupportedRequest { kind: String },
+    UnsupportedRequest {
+        kind: String,
+    },
 }
 
 impl std::error::Error for SystemError {}
@@ -32,13 +43,13 @@ impl std::fmt::Display for SystemError {
                 f,
                 "Cannot parse request: {} in: {}",
                 error,
-                String::from_utf8_lossy(&request)
+                String::from_utf8_lossy(request)
             ),
             SystemError::InvalidResponse { error, response } => write!(
                 f,
                 "Cannot parse response: {} in: {}",
                 error,
-                String::from_utf8_lossy(&response)
+                String::from_utf8_lossy(response)
             ),
             SystemError::NoSuchContract { addr } => write!(f, "No such contract: {}", addr),
             SystemError::Unknown {} => write!(f, "Unknown system error"),

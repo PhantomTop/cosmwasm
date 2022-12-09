@@ -1,39 +1,41 @@
 use cosmwasm_std::{
-    attr, entry_point, to_binary, CosmosMsg, Deps, DepsMut, Env, HumanAddr, IbcMsg, MessageInfo,
-    Order, QueryResponse, Response, StdError, StdResult,
+    entry_point, to_binary, CosmosMsg, Deps, DepsMut, Env, IbcMsg, MessageInfo, Order,
+    QueryResponse, Response, StdError, StdResult,
 };
 
-use crate::ibc::build_timeout_timestamp;
+use crate::ibc::PACKET_LIFETIME;
 use crate::ibc_msg::PacketMsg;
 use crate::msg::{
-    AccountInfo, AccountResponse, AdminResponse, HandleMsg, InitMsg, ListAccountsResponse, QueryMsg,
+    AccountInfo, AccountResponse, AdminResponse, ExecuteMsg, InstantiateMsg, ListAccountsResponse,
+    QueryMsg,
 };
 use crate::state::{accounts, accounts_read, config, config_read, Config};
 
 #[entry_point]
-pub fn init(deps: DepsMut, _env: Env, info: MessageInfo, _msg: InitMsg) -> StdResult<Response> {
+pub fn instantiate(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    _msg: InstantiateMsg,
+) -> StdResult<Response> {
     // we store the reflect_id for creating accounts later
     let cfg = Config { admin: info.sender };
     config(deps.storage).save(&cfg)?;
 
-    Ok(Response {
-        data: None,
-        messages: vec![],
-        attributes: vec![attr("action", "init")],
-    })
+    Ok(Response::new().add_attribute("action", "instantiate"))
 }
 
 #[entry_point]
-pub fn handle(deps: DepsMut, env: Env, info: MessageInfo, msg: HandleMsg) -> StdResult<Response> {
+pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> StdResult<Response> {
     match msg {
-        HandleMsg::UpdateAdmin { admin } => handle_update_admin(deps, info, admin),
-        HandleMsg::SendMsgs { channel_id, msgs } => {
+        ExecuteMsg::UpdateAdmin { admin } => handle_update_admin(deps, info, admin),
+        ExecuteMsg::SendMsgs { channel_id, msgs } => {
             handle_send_msgs(deps, env, info, channel_id, msgs)
         }
-        HandleMsg::CheckRemoteBalance { channel_id } => {
+        ExecuteMsg::CheckRemoteBalance { channel_id } => {
             handle_check_remote_balance(deps, env, info, channel_id)
         }
-        HandleMsg::SendFunds {
+        ExecuteMsg::SendFunds {
             reflect_channel_id,
             transfer_channel_id,
         } => handle_send_funds(deps, env, info, reflect_channel_id, transfer_channel_id),
@@ -43,24 +45,19 @@ pub fn handle(deps: DepsMut, env: Env, info: MessageInfo, msg: HandleMsg) -> Std
 pub fn handle_update_admin(
     deps: DepsMut,
     info: MessageInfo,
-    new_admin: HumanAddr,
+    new_admin: String,
 ) -> StdResult<Response> {
     // auth check
     let mut cfg = config(deps.storage).load()?;
     if info.sender != cfg.admin {
         return Err(StdError::generic_err("Only admin may set new admin"));
     }
-    cfg.admin = new_admin;
+    cfg.admin = deps.api.addr_validate(&new_admin)?;
     config(deps.storage).save(&cfg)?;
 
-    Ok(Response {
-        messages: vec![],
-        attributes: vec![
-            attr("action", "handle_update_admin"),
-            attr("new_admin", cfg.admin),
-        ],
-        data: None,
-    })
+    Ok(Response::new()
+        .add_attribute("action", "handle_update_admin")
+        .add_attribute("new_admin", cfg.admin))
 }
 
 pub fn handle_send_msgs(
@@ -83,15 +80,13 @@ pub fn handle_send_msgs(
     let msg = IbcMsg::SendPacket {
         channel_id,
         data: to_binary(&packet)?,
-        timeout_block: None,
-        timeout_timestamp: build_timeout_timestamp(&env.block),
+        timeout: env.block.time.plus_seconds(PACKET_LIFETIME).into(),
     };
 
-    Ok(Response {
-        messages: vec![msg.into()],
-        attributes: vec![attr("action", "handle_send_msgs")],
-        data: None,
-    })
+    let res = Response::new()
+        .add_message(msg)
+        .add_attribute("action", "handle_send_msgs");
+    Ok(res)
 }
 
 pub fn handle_check_remote_balance(
@@ -113,15 +108,13 @@ pub fn handle_check_remote_balance(
     let msg = IbcMsg::SendPacket {
         channel_id,
         data: to_binary(&packet)?,
-        timeout_block: None,
-        timeout_timestamp: build_timeout_timestamp(&env.block),
+        timeout: env.block.time.plus_seconds(PACKET_LIFETIME).into(),
     };
 
-    Ok(Response {
-        messages: vec![msg.into()],
-        attributes: vec![attr("action", "handle_check_remote_balance")],
-        data: None,
-    })
+    let res = Response::new()
+        .add_message(msg)
+        .add_attribute("action", "handle_check_remote_balance");
+    Ok(res)
 }
 
 pub fn handle_send_funds(
@@ -163,15 +156,13 @@ pub fn handle_send_funds(
         channel_id: transfer_channel_id,
         to_address: remote_addr,
         amount,
-        timeout_block: None,
-        timeout_timestamp: build_timeout_timestamp(&env.block),
+        timeout: env.block.time.plus_seconds(PACKET_LIFETIME).into(),
     };
 
-    Ok(Response {
-        messages: vec![msg.into()],
-        attributes: vec![attr("action", "handle_send_funds")],
-        data: None,
-    })
+    let res = Response::new()
+        .add_message(msg)
+        .add_attribute("action", "handle_send_funds");
+    Ok(res)
 }
 
 #[entry_point]
@@ -204,7 +195,9 @@ fn query_list_accounts(deps: Deps) -> StdResult<ListAccountsResponse> {
 
 fn query_admin(deps: Deps) -> StdResult<AdminResponse> {
     let Config { admin } = config_read(deps.storage).load()?;
-    Ok(AdminResponse { admin })
+    Ok(AdminResponse {
+        admin: admin.into(),
+    })
 }
 
 #[cfg(test)]
@@ -215,11 +208,11 @@ mod tests {
     const CREATOR: &str = "creator";
 
     #[test]
-    fn init_works() {
-        let mut deps = mock_dependencies(&[]);
-        let msg = InitMsg {};
+    fn instantiate_works() {
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {};
         let info = mock_info(CREATOR, &[]);
-        let res = init(deps.as_mut(), mock_env(), info, msg).unwrap();
+        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
 
         let admin = query_admin(deps.as_ref()).unwrap();

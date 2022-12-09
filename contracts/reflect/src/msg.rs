@@ -1,76 +1,53 @@
-#![allow(clippy::field_reassign_with_default)] // see https://github.com/CosmWasm/cosmwasm/issues/685
+use cosmwasm_schema::{cw_serde, QueryResponses};
+use cosmwasm_std::{Binary, CosmosMsg, CustomQuery, QueryRequest, SubMsg};
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+#[cw_serde]
+pub struct InstantiateMsg {}
 
-use cosmwasm_std::{Binary, CosmosMsg, CustomQuery, HumanAddr, QueryRequest};
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct InitMsg {
-    /// if set, returns CallbackMsg::InitCallback{} to the caller with this contract's address
-    /// and this id
-    pub callback_id: Option<String>,
-}
-
-/// This is what we return upon init if callback is set
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CallbackMsg {
-    InitCallback {
-        /// id was provided in the InitMsg
-        id: String,
-        /// contract_addr is the address of this contract
-        contract_addr: HumanAddr,
-    },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HandleMsg {
+#[cw_serde]
+pub enum ExecuteMsg {
     ReflectMsg { msgs: Vec<CosmosMsg<CustomMsg>> },
-    ChangeOwner { owner: HumanAddr },
+    ReflectSubMsg { msgs: Vec<SubMsg<CustomMsg>> },
+    ChangeOwner { owner: String },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
+#[derive(QueryResponses)]
 pub enum QueryMsg {
+    #[returns(OwnerResponse)]
     Owner {},
     /// This will call out to SpecialQuery::Capitalized
-    Capitalized {
-        text: String,
-    },
+    #[returns(CapitalizedResponse)]
+    Capitalized { text: String },
     /// Queries the blockchain and returns the result untouched
-    Chain {
-        request: QueryRequest<SpecialQuery>,
-    },
+    #[returns(ChainResponse)]
+    Chain { request: QueryRequest<SpecialQuery> },
     /// Queries another contract and returns the data
-    Raw {
-        contract: HumanAddr,
-        key: Binary,
-    },
+    #[returns(RawResponse)]
+    Raw { contract: String, key: Binary },
+    /// If there was a previous ReflectSubMsg with this ID, returns cosmwasm_std::Reply
+    #[returns(cosmwasm_std::Reply)]
+    SubMsgResult { id: u64 },
 }
 
 // We define a custom struct for each query response
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct OwnerResponse {
-    pub owner: HumanAddr,
+    pub owner: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
 pub struct CapitalizedResponse {
     pub text: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
 pub struct ChainResponse {
     pub data: Binary,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
 pub struct RawResponse {
     /// The returned value of the raw query. Empty data can be the
     /// result of a non-existent key or an empty value. We cannot
@@ -78,22 +55,22 @@ pub struct RawResponse {
     pub data: Binary,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
 /// CustomMsg is an override of CosmosMsg::Custom to show this works and can be extended in the contract
 pub enum CustomMsg {
     Debug(String),
     Raw(Binary),
 }
 
-impl Into<CosmosMsg<CustomMsg>> for CustomMsg {
-    fn into(self) -> CosmosMsg<CustomMsg> {
-        CosmosMsg::Custom(self)
+impl cosmwasm_std::CustomMsg for CustomMsg {}
+
+impl From<CustomMsg> for CosmosMsg<CustomMsg> {
+    fn from(original: CustomMsg) -> Self {
+        CosmosMsg::Custom(original)
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
 /// An implementation of QueryRequest::Custom to show this works and can be extended in the contract
 pub enum SpecialQuery {
     Ping {},
@@ -102,8 +79,7 @@ pub enum SpecialQuery {
 
 impl CustomQuery for SpecialQuery {}
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
 /// The response data for all `SpecialQuery`s
 pub struct SpecialResponse {
     pub msg: String,

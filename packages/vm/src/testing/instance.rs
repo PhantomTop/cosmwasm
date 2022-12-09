@@ -1,11 +1,11 @@
 //! This file has some helpers for integration tests.
 //! They should be imported via full path to ensure there is no confusion
 //! use cosmwasm_vm::testing::X
-use cosmwasm_std::{Coin, HumanAddr};
+use cosmwasm_std::Coin;
 use std::collections::HashSet;
 
+use crate::capabilities::capabilities_from_csv;
 use crate::compatibility::check_wasm;
-use crate::features::features_from_csv;
 use crate::instance::{Instance, InstanceOptions};
 use crate::size::Size;
 use crate::{Backend, BackendApi, Querier, Storage};
@@ -17,7 +17,7 @@ use super::storage::MockStorage;
 /// This gas limit is used in integration tests and should be high enough to allow a reasonable
 /// number of contract executions and queries on one instance. For this reason it is significatly
 /// higher than the limit for a single execution that we have in the production setup.
-const DEFAULT_GAS_LIMIT: u64 = 5_000_000;
+const DEFAULT_GAS_LIMIT: u64 = 500_000_000_000; // ~0.5ms
 const DEFAULT_MEMORY_LIMIT: Option<Size> = Some(Size::mebi(16));
 const DEFAULT_PRINT_DEBUG: bool = true;
 
@@ -51,7 +51,7 @@ pub fn mock_instance_with_failing_api(
 
 pub fn mock_instance_with_balances(
     wasm: &[u8],
-    balances: &[(&HumanAddr, &[Coin])],
+    balances: &[(&str, &[Coin])],
 ) -> Instance<MockApi, MockStorage, MockQuerier> {
     mock_instance_with_options(
         wasm,
@@ -62,6 +62,8 @@ pub fn mock_instance_with_balances(
     )
 }
 
+/// Creates an instance from the given Wasm bytecode.
+/// The gas limit is measured in [CosmWasm gas](https://github.com/CosmWasm/cosmwasm/blob/main/docs/GAS.md).
 pub fn mock_instance_with_gas_limit(
     wasm: &[u8],
     gas_limit: u64,
@@ -78,14 +80,15 @@ pub fn mock_instance_with_gas_limit(
 #[derive(Debug)]
 pub struct MockInstanceOptions<'a> {
     // dependencies
-    pub balances: &'a [(&'a HumanAddr, &'a [Coin])],
+    pub balances: &'a [(&'a str, &'a [Coin])],
     /// This option is merged into balances and might override an existing value
     pub contract_balance: Option<&'a [Coin]>,
     /// When set, all calls to the API fail with BackendError::Unknown containing this message
     pub backend_error: Option<&'static str>,
 
     // instance
-    pub supported_features: HashSet<String>,
+    pub available_capabilities: HashSet<String>,
+    /// Gas limit measured in [CosmWasm gas](https://github.com/CosmWasm/cosmwasm/blob/main/docs/GAS.md).
     pub gas_limit: u64,
     pub print_debug: bool,
     /// Memory limit in bytes. Use a value that is divisible by the Wasm page size 65536, e.g. full MiBs.
@@ -93,14 +96,12 @@ pub struct MockInstanceOptions<'a> {
 }
 
 impl MockInstanceOptions<'_> {
-    #[cfg(feature = "stargate")]
-    fn default_features() -> HashSet<String> {
-        features_from_csv("staking,stargate")
-    }
-
-    #[cfg(not(feature = "stargate"))]
-    fn default_features() -> HashSet<String> {
-        features_from_csv("staking")
+    fn default_capabilities() -> HashSet<String> {
+        #[allow(unused_mut)]
+        let mut out = capabilities_from_csv("iterator,staking,cosmwasm_1_1");
+        #[cfg(feature = "stargate")]
+        out.insert("stargate".to_string());
+        out
     }
 }
 
@@ -113,7 +114,7 @@ impl Default for MockInstanceOptions<'_> {
             backend_error: None,
 
             // instance
-            supported_features: Self::default_features(),
+            available_capabilities: Self::default_capabilities(),
             gas_limit: DEFAULT_GAS_LIMIT,
             print_debug: DEFAULT_PRINT_DEBUG,
             memory_limit: DEFAULT_MEMORY_LIMIT,
@@ -125,17 +126,17 @@ pub fn mock_instance_with_options(
     wasm: &[u8],
     options: MockInstanceOptions,
 ) -> Instance<MockApi, MockStorage, MockQuerier> {
-    check_wasm(wasm, &options.supported_features).unwrap();
-    let contract_address = HumanAddr::from(MOCK_CONTRACT_ADDR);
+    check_wasm(wasm, &options.available_capabilities).unwrap();
+    let contract_address = MOCK_CONTRACT_ADDR;
 
     // merge balances
     let mut balances = options.balances.to_vec();
     if let Some(contract_balance) = options.contract_balance {
         // Remove old entry if exists
-        if let Some(pos) = balances.iter().position(|item| *item.0 == contract_address) {
+        if let Some(pos) = balances.iter().position(|item| item.0 == contract_address) {
             balances.remove(pos);
         }
-        balances.push((&contract_address, contract_balance));
+        balances.push((contract_address, contract_balance));
     }
 
     let api = if let Some(backend_error) = options.backend_error {

@@ -1,4 +1,4 @@
-use std::convert::TryFrom;
+use std::fmt;
 
 use sha2::{Digest, Sha256};
 
@@ -17,9 +17,20 @@ impl Checksum {
         Checksum(Sha256::digest(wasm).into())
     }
 
-    /// Creates a lowercase hex encoded copy of this checksum
-    pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+    /// Creates a lowercase hex encoded copy of this checksum.
+    ///
+    /// This takes an owned `self` instead of a reference because `Checksum` is cheap to `Copy`.
+    pub fn to_hex(self) -> String {
+        self.to_string()
+    }
+}
+
+impl fmt::Display for Checksum {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for byte in self.0.iter() {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
     }
 }
 
@@ -42,10 +53,9 @@ impl TryFrom<&[u8]> for Checksum {
     }
 }
 
-impl Into<Vec<u8>> for Checksum {
-    fn into(self) -> Vec<u8> {
-        // Rust 1.43+ also supports self.0.into()
-        self.0.to_vec()
+impl From<Checksum> for Vec<u8> {
+    fn from(original: Checksum) -> Vec<u8> {
+        original.0.into()
     }
 }
 
@@ -68,6 +78,22 @@ mod tests {
     }
 
     #[test]
+    fn implemented_display() {
+        let wasm = vec![0x68, 0x69, 0x6a];
+        let checksum = Checksum::generate(&wasm);
+        // echo -n "hij" | sha256sum
+        let embedded = format!("Check: {}", checksum);
+        assert_eq!(
+            embedded,
+            "Check: 722c8c993fd75a7627d69ed941344fe2a1423a3e75efd3e6778a142884227104"
+        );
+        assert_eq!(
+            checksum.to_string(),
+            "722c8c993fd75a7627d69ed941344fe2a1423a3e75efd3e6778a142884227104"
+        );
+    }
+
+    #[test]
     fn to_hex_works() {
         let wasm = vec![0x68, 0x69, 0x6a];
         let checksum = Checksum::generate(&wasm);
@@ -80,7 +106,7 @@ mod tests {
 
     #[test]
     fn into_vec_works() {
-        let checksum = Checksum::generate(&vec![12u8; 17]);
+        let checksum = Checksum::generate(&[12u8; 17]);
         let as_vec: Vec<u8> = checksum.into();
         assert_eq!(as_vec, checksum.0);
     }

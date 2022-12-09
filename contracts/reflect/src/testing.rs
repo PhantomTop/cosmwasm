@@ -1,21 +1,23 @@
+use std::marker::PhantomData;
+
 use crate::msg::{SpecialQuery, SpecialResponse};
 
 use cosmwasm_std::testing::{MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
-use cosmwasm_std::{to_binary, Binary, Coin, ContractResult, HumanAddr, OwnedDeps, SystemResult};
+use cosmwasm_std::{to_binary, Binary, Coin, ContractResult, OwnedDeps, SystemResult};
 
 /// A drop-in replacement for cosmwasm_std::testing::mock_dependencies
 /// this uses our CustomQuerier.
 pub fn mock_dependencies_with_custom_querier(
     contract_balance: &[Coin],
-) -> OwnedDeps<MockStorage, MockApi, MockQuerier<SpecialQuery>> {
-    let contract_addr = HumanAddr::from(MOCK_CONTRACT_ADDR);
+) -> OwnedDeps<MockStorage, MockApi, MockQuerier<SpecialQuery>, SpecialQuery> {
     let custom_querier: MockQuerier<SpecialQuery> =
-        MockQuerier::new(&[(&contract_addr, contract_balance)])
-            .with_custom_handler(|query| SystemResult::Ok(custom_query_execute(&query)));
+        MockQuerier::new(&[(MOCK_CONTRACT_ADDR, contract_balance)])
+            .with_custom_handler(|query| SystemResult::Ok(custom_query_execute(query)));
     OwnedDeps {
         storage: MockStorage::default(),
         api: MockApi::default(),
         querier: custom_querier,
+        custom_query_type: PhantomData,
     }
 }
 
@@ -57,7 +59,7 @@ mod tests {
         }
         .into();
         let wrapper = QuerierWrapper::new(&deps.querier);
-        let response: SpecialResponse = wrapper.custom_query(&req).unwrap();
+        let response: SpecialResponse = wrapper.query(&req).unwrap();
         assert_eq!(response.msg, "FOOD");
     }
 }

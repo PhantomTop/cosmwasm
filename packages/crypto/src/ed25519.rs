@@ -1,19 +1,7 @@
 use ed25519_zebra::{batch, Signature, VerificationKey};
 use rand_core::OsRng;
-use std::convert::TryFrom;
-use std::convert::TryInto;
 
 use crate::errors::{CryptoError, CryptoResult};
-
-/// Max length of a message for ed25519 verification in bytes.
-/// This is an arbitrary value, for performance / memory contraints. If you need to verify larger
-/// messages, let us know.
-pub const MESSAGE_MAX_LEN: usize = 128 * 1024;
-
-/// Max number of batch messages / signatures / public_keys.
-/// This is an arbitrary value, for performance / memory contraints. If you need to batch-verify a
-/// larger number of signatures, let us know.
-pub const BATCH_MAX_LEN: usize = 256;
 
 /// Length of a serialized public key
 pub const EDDSA_PUBKEY_LEN: usize = 32;
@@ -30,13 +18,12 @@ pub const EDDSA_PUBKEY_LEN: usize = 32;
 /// - public key: raw ED25519 public key (32 bytes).
 pub fn ed25519_verify(message: &[u8], signature: &[u8], public_key: &[u8]) -> CryptoResult<bool> {
     // Validation
-    check_message_length(message)?;
     let signature = read_signature(signature)?;
     let pubkey = read_pubkey(public_key)?;
 
     // Verification
     match VerificationKey::try_from(pubkey)
-        .and_then(|vk| vk.verify(&Signature::from(signature), &message))
+        .and_then(|vk| vk.verify(&Signature::from(signature), message))
     {
         Ok(()) => Ok(true),
         Err(_) => Ok(false),
@@ -108,7 +95,6 @@ pub fn ed25519_batch_verify(
         .zip(public_keys.iter())
     {
         // Validation
-        check_message_length(message)?;
         let signature = read_signature(signature)?;
         let pubkey = read_pubkey(public_key)?;
 
@@ -117,7 +103,7 @@ pub fn ed25519_batch_verify(
     }
 
     // Batch verification
-    match batch.verify(&mut OsRng) {
+    match batch.verify(OsRng) {
         Ok(()) => Ok(true),
         Err(_) => Ok(false),
     }
@@ -149,28 +135,6 @@ fn read_pubkey(data: &[u8]) -> Result<[u8; 32], InvalidEd25519PubkeyFormat> {
     data.try_into().map_err(|_| InvalidEd25519PubkeyFormat)
 }
 
-struct MessageTooLong {
-    limit: usize,
-    actual: usize,
-}
-
-impl From<MessageTooLong> for CryptoError {
-    fn from(original: MessageTooLong) -> Self {
-        CryptoError::message_too_long(original.limit, original.actual)
-    }
-}
-
-fn check_message_length(message: &[u8]) -> Result<(), MessageTooLong> {
-    if message.len() > MESSAGE_MAX_LEN {
-        Err(MessageTooLong {
-            limit: MESSAGE_MAX_LEN,
-            actual: message.len(),
-        })
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +159,7 @@ mod tests {
     #[derive(Deserialize, Debug)]
     struct Encoded {
         #[serde(rename = "privkey")]
+        #[allow(dead_code)]
         private_key: String,
         #[serde(rename = "pubkey")]
         public_key: String,
@@ -217,8 +182,8 @@ mod tests {
     fn test_ed25519_verify() {
         let message = MSG.as_bytes();
         // Signing
-        let secret_key = SigningKey::new(&mut OsRng);
-        let signature = secret_key.sign(&message);
+        let secret_key = SigningKey::new(OsRng);
+        let signature = secret_key.sign(message);
 
         let public_key = VerificationKey::from(&secret_key);
 
@@ -227,17 +192,17 @@ mod tests {
         let public_key_bytes: [u8; 32] = public_key.into();
 
         // Verification
-        assert!(ed25519_verify(&message, &signature_bytes, &public_key_bytes).unwrap());
+        assert!(ed25519_verify(message, &signature_bytes, &public_key_bytes).unwrap());
 
         // Wrong message fails
         let bad_message = [message, b"\0"].concat();
         assert!(!ed25519_verify(&bad_message, &signature_bytes, &public_key_bytes).unwrap());
 
         // Other pubkey fails
-        let other_secret_key = SigningKey::new(&mut OsRng);
+        let other_secret_key = SigningKey::new(OsRng);
         let other_public_key = VerificationKey::from(&other_secret_key);
         let other_public_key_bytes: [u8; 32] = other_public_key.into();
-        assert!(!ed25519_verify(&message, &signature_bytes, &other_public_key_bytes).unwrap());
+        assert!(!ed25519_verify(message, &signature_bytes, &other_public_key_bytes).unwrap());
     }
 
     #[test]
@@ -254,20 +219,20 @@ mod tests {
                 .as_slice(),
         )
         .unwrap();
-        let signature = secret_key.sign(&COSMOS_ED25519_MSG.as_bytes());
+        let signature = secret_key.sign(COSMOS_ED25519_MSG.as_bytes());
 
         let signature_bytes: [u8; 64] = signature.into();
         let public_key_bytes: [u8; 32] = public_key.into();
 
         assert_eq!(
             signature_bytes,
-            hex::decode(&COSMOS_ED25519_SIGNATURE_HEX)
+            hex::decode(COSMOS_ED25519_SIGNATURE_HEX)
                 .unwrap()
                 .as_slice()
         );
 
         assert!(ed25519_verify(
-            &COSMOS_ED25519_MSG.as_bytes(),
+            COSMOS_ED25519_MSG.as_bytes(),
             &signature_bytes,
             &public_key_bytes
         )
@@ -288,7 +253,8 @@ mod tests {
             // ed25519_verify() works
             assert!(
                 ed25519_verify(&message, &signature, &public_key).unwrap(),
-                format!("verify() failed (test case {})", i)
+                "verify() failed (test case {})",
+                i
             );
         }
     }

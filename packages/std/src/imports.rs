@@ -1,7 +1,6 @@
 use std::vec::Vec;
 
-use crate::addresses::{CanonicalAddr, HumanAddr};
-use crate::binary::Binary;
+use crate::addresses::{Addr, CanonicalAddr};
 use crate::errors::{RecoverPubkeyError, StdError, StdResult, SystemError, VerificationError};
 use crate::import_helpers::{from_high_half, from_low_half};
 use crate::memory::{alloc, build_region, consume_region, Region};
@@ -13,19 +12,22 @@ use crate::serde::from_slice;
 use crate::traits::{Api, Querier, QuerierResult, Storage};
 #[cfg(feature = "iterator")]
 use crate::{
-    iterator::{Order, KV},
+    iterator::{Order, Record},
     memory::get_optional_region_address,
 };
 
 /// An upper bound for typical canonical address lengths (e.g. 20 in Cosmos SDK/Ethereum or 32 in Nano/Substrate)
-const CANONICAL_ADDRESS_BUFFER_LENGTH: usize = 32;
+const CANONICAL_ADDRESS_BUFFER_LENGTH: usize = 64;
 /// An upper bound for typical human readable address formats (e.g. 42 for Ethereum hex addresses or 90 for bech32)
 const HUMAN_ADDRESS_BUFFER_LENGTH: usize = 90;
 
 // This interface will compile into required Wasm imports.
 // A complete documentation those functions is available in the VM that provides them:
-// https://github.com/confio/cosmwasm/blob/0.7/lib/vm/src/instance.rs#L43
+// https://github.com/CosmWasm/cosmwasm/blob/v1.0.0-beta/packages/vm/src/instance.rs#L89-L206
 extern "C" {
+    #[cfg(feature = "abort")]
+    fn abort(source_ptr: u32);
+
     fn db_read(key: u32) -> u32;
     fn db_write(key: u32, value: u32);
     fn db_remove(key: u32);
@@ -36,18 +38,37 @@ extern "C" {
     #[cfg(feature = "iterator")]
     fn db_next(iterator_id: u32) -> u32;
 
-    fn canonicalize_address(source_ptr: u32, destination_ptr: u32) -> u32;
-    fn humanize_address(source_ptr: u32, destination_ptr: u32) -> u32;
+    fn addr_validate(source_ptr: u32) -> u32;
+    fn addr_canonicalize(source_ptr: u32, destination_ptr: u32) -> u32;
+    fn addr_humanize(source_ptr: u32, destination_ptr: u32) -> u32;
 
+    /// Verifies message hashes against a signature with a public key, using the
+    /// secp256k1 ECDSA parametrization.
+    /// Returns 0 on verification success, 1 on verification failure, and values
+    /// greater than 1 in case of error.
     fn secp256k1_verify(message_hash_ptr: u32, signature_ptr: u32, public_key_ptr: u32) -> u32;
+
     fn secp256k1_recover_pubkey(
         message_hash_ptr: u32,
         signature_ptr: u32,
         recovery_param: u32,
     ) -> u64;
+
+    /// Verifies a message against a signature with a public key, using the
+    /// ed25519 EdDSA scheme.
+    /// Returns 0 on verification success, 1 on verification failure, and values
+    /// greater than 1 in case of error.
     fn ed25519_verify(message_ptr: u32, signature_ptr: u32, public_key_ptr: u32) -> u32;
+
+    /// Verifies a batch of messages against a batch of signatures and public keys, using the
+    /// ed25519 EdDSA scheme.
+    /// Returns 0 on verification success, 1 on verification failure, and values
+    /// greater than 1 in case of error.
     fn ed25519_batch_verify(messages_ptr: u32, signatures_ptr: u32, public_keys_ptr: u32) -> u32;
 
+    /// Writes a debug message (UFT-8 encoded) to the host for debugging purposes.
+    /// The host is free to log or process this in any way it considers appropriate.
+    /// In production environments it is expected that those messages are discarded.
     fn debug(source_ptr: u32);
 
     /// Executes a query on the chain (import). Not to be confused with the
@@ -107,7 +128,7 @@ impl Storage for ExternalStorage {
         start: Option<&[u8]>,
         end: Option<&[u8]>,
         order: Order,
-    ) -> Box<dyn Iterator<Item = KV>> {
+    ) -> Box<dyn Iterator<Item = Record>> {
         // There is lots of gotchas on turning options into regions for FFI, thus this design
         // See: https://github.com/CosmWasm/cosmwasm/pull/509
         let start_region = start.map(build_region);
@@ -129,7 +150,7 @@ struct ExternalIterator {
 
 #[cfg(feature = "iterator")]
 impl Iterator for ExternalIterator {
-    type Item = KV;
+    type Item = Record;
 
     fn next(&mut self) -> Option<Self::Item> {
         let next_result = unsafe { db_next(self.iterator_id) };
@@ -155,40 +176,72 @@ impl ExternalApi {
 }
 
 impl Api for ExternalApi {
-    fn canonical_address(&self, human: &HumanAddr) -> StdResult<CanonicalAddr> {
-        let send = build_region(human.as_str().as_bytes());
-        let send_ptr = &*send as *const Region as u32;
-        let canon = alloc(CANONICAL_ADDRESS_BUFFER_LENGTH);
+    fn addr_validate(&self, input: &str) -> StdResult<Addr> {
+        let input_bytes = input.as_bytes();
+        if input_bytes.len() > 256 {
+            // See MAX_LENGTH_HUMAN_ADDRESS in the VM.
+            // In this case, the VM will refuse to read the input from the contract.
+            // Stop here to allow handling the error in the contract.
+            return Err(StdError::generic_err("input too long for addr_validate"));
+        }
+        let source = build_region(input_bytes);
+        let source_ptr = &*source as *const Region as u32;
 
-        let result = unsafe { canonicalize_address(send_ptr, canon as u32) };
+        let result = unsafe { addr_validate(source_ptr) };
         if result != 0 {
             let error = unsafe { consume_string_region_written_by_vm(result as *mut Region) };
             return Err(StdError::generic_err(format!(
-                "canonicalize_address errored: {}",
+                "addr_validate errored: {}",
+                error
+            )));
+        }
+
+        Ok(Addr::unchecked(input))
+    }
+
+    fn addr_canonicalize(&self, input: &str) -> StdResult<CanonicalAddr> {
+        let input_bytes = input.as_bytes();
+        if input_bytes.len() > 256 {
+            // See MAX_LENGTH_HUMAN_ADDRESS in the VM.
+            // In this case, the VM will refuse to read the input from the contract.
+            // Stop here to allow handling the error in the contract.
+            return Err(StdError::generic_err(
+                "input too long for addr_canonicalize",
+            ));
+        }
+        let send = build_region(input_bytes);
+        let send_ptr = &*send as *const Region as u32;
+        let canon = alloc(CANONICAL_ADDRESS_BUFFER_LENGTH);
+
+        let result = unsafe { addr_canonicalize(send_ptr, canon as u32) };
+        if result != 0 {
+            let error = unsafe { consume_string_region_written_by_vm(result as *mut Region) };
+            return Err(StdError::generic_err(format!(
+                "addr_canonicalize errored: {}",
                 error
             )));
         }
 
         let out = unsafe { consume_region(canon) };
-        Ok(CanonicalAddr(Binary(out)))
+        Ok(CanonicalAddr::from(out))
     }
 
-    fn human_address(&self, canonical: &CanonicalAddr) -> StdResult<HumanAddr> {
+    fn addr_humanize(&self, canonical: &CanonicalAddr) -> StdResult<Addr> {
         let send = build_region(&canonical);
         let send_ptr = &*send as *const Region as u32;
         let human = alloc(HUMAN_ADDRESS_BUFFER_LENGTH);
 
-        let result = unsafe { humanize_address(send_ptr, human as u32) };
+        let result = unsafe { addr_humanize(send_ptr, human as u32) };
         if result != 0 {
             let error = unsafe { consume_string_region_written_by_vm(result as *mut Region) };
             return Err(StdError::generic_err(format!(
-                "humanize_address errored: {}",
+                "addr_humanize errored: {}",
                 error
             )));
         }
 
         let address = unsafe { consume_string_region_written_by_vm(human) };
-        Ok(address.into())
+        Ok(Addr::unchecked(address))
     }
 
     fn secp256k1_verify(
@@ -262,7 +315,7 @@ impl Api for ExternalApi {
         match result {
             0 => Ok(true),
             1 => Ok(false),
-            2 => Err(VerificationError::MessageTooLong),
+            2 => panic!("Error code 2 unused since CosmWasm 0.15. This is a bug in the VM."),
             3 => panic!("InvalidHashFormat must not happen. This is a bug in the VM."),
             4 => Err(VerificationError::InvalidSignatureFormat),
             5 => Err(VerificationError::InvalidPubkeyFormat),
@@ -294,7 +347,7 @@ impl Api for ExternalApi {
         match result {
             0 => Ok(true),
             1 => Ok(false),
-            2 => Err(VerificationError::MessageTooLong),
+            2 => panic!("Error code 2 unused since CosmWasm 0.15. This is a bug in the VM."),
             3 => panic!("InvalidHashFormat must not happen. This is a bug in the VM."),
             4 => Err(VerificationError::InvalidSignatureFormat),
             5 => Err(VerificationError::InvalidPubkeyFormat),
@@ -343,4 +396,12 @@ impl Querier for ExternalQuerier {
             })
         })
     }
+}
+
+#[cfg(feature = "abort")]
+pub fn handle_panic(message: &str) {
+    // keep the boxes in scope, so we free it at the end (don't cast to pointers same line as build_region)
+    let region = build_region(message.as_bytes());
+    let region_ptr = region.as_ref() as *const Region as u32;
+    unsafe { abort(region_ptr) };
 }

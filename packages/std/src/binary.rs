@@ -1,5 +1,4 @@
 use std::fmt;
-use std::mem;
 use std::ops::Deref;
 
 use schemars::JsonSchema;
@@ -10,15 +9,16 @@ use crate::errors::{StdError, StdResult};
 /// Binary is a wrapper around Vec<u8> to add base64 de/serialization
 /// with serde. It also adds some helper methods to help encode inline.
 ///
-/// This is only needed as serde-json-{core,wasm} has a horrible encoding for Vec<u8>
-#[derive(Clone, Default, Debug, PartialEq, Eq, Hash, JsonSchema)]
+/// This is only needed as serde-json-{core,wasm} has a horrible encoding for Vec<u8>.
+/// See also <https://github.com/CosmWasm/cosmwasm/blob/main/docs/MESSAGE_TYPES.md>.
+#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord, JsonSchema)]
 pub struct Binary(#[schemars(with = "String")] pub Vec<u8>);
 
 impl Binary {
     /// take an (untrusted) string and decode it into bytes.
     /// fails if it is not valid base64
     pub fn from_base64(encoded: &str) -> StdResult<Self> {
-        let binary = base64::decode(&encoded).map_err(StdError::invalid_base64)?;
+        let binary = base64::decode(encoded).map_err(StdError::invalid_base64)?;
         Ok(Binary(binary))
     }
 
@@ -33,12 +33,6 @@ impl Binary {
     }
 
     /// Copies content into fixed-sized array.
-    /// The result type `A: ByteArray` is a workaround for
-    /// the missing [const-generics](https://rust-lang.github.io/rfcs/2000-const-generics.html).
-    /// `A` is a fixed-sized array like `[u8; 8]`.
-    ///
-    /// ByteArray is implemented for `[u8; 0]` to `[u8; 64]`, such that
-    /// we are limited to 64 bytes for now.
     ///
     /// # Examples
     ///
@@ -59,19 +53,13 @@ impl Binary {
     /// let num = u64::from_be_bytes(binary.to_array().unwrap());
     /// assert_eq!(num, 10045108015024774967);
     /// ```
-    pub fn to_array<A>(&self) -> StdResult<A>
-    where
-        A: ByteArray,
-    {
-        let out_size = std::mem::size_of::<A>();
-        if self.len() != out_size {
-            return Err(StdError::invalid_data_size(out_size, self.len()));
+    pub fn to_array<const LENGTH: usize>(&self) -> StdResult<[u8; LENGTH]> {
+        if self.len() != LENGTH {
+            return Err(StdError::invalid_data_size(LENGTH, self.len()));
         }
 
-        // We cannot use Default::default() because it is only implemented for
-        // short arrays [T; 0] … [T; 64].
-        let mut out: A = unsafe { mem::zeroed() };
-        <A as AsMut<[u8]>>::as_mut(&mut out).copy_from_slice(&self.0);
+        let mut out: [u8; LENGTH] = [0; LENGTH];
+        out.copy_from_slice(&self.0);
         Ok(out)
     }
 }
@@ -79,6 +67,19 @@ impl Binary {
 impl fmt::Display for Binary {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.to_base64())
+    }
+}
+
+impl fmt::Debug for Binary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Use an output inspired by tuples (https://doc.rust-lang.org/std/fmt/struct.Formatter.html#method.debug_tuple)
+        // but with a custom implementation to avoid the need for an intemediate hex string.
+        write!(f, "Binary(")?;
+        for byte in self.0.iter() {
+            write!(f, "{:02x}", byte)?;
+        }
+        write!(f, ")")?;
+        Ok(())
     }
 }
 
@@ -101,40 +102,18 @@ impl Deref for Binary {
     }
 }
 
-// Macro needed until https://rust-lang.github.io/rfcs/2000-const-generics.html is stable.
-// See https://users.rust-lang.org/t/how-to-implement-trait-for-fixed-size-array-of-any-size/31494
-macro_rules! implement_from_for_fixed_length_arrays {
-    ($($N:literal)+) => {
-        $(
-            // Reference
-            impl From<&[u8; $N]> for Binary {
-                fn from(source: &[u8; $N]) -> Self {
-                    Self(source.to_vec())
-                }
-            }
-
-            // Owned
-            impl From<[u8; $N]> for Binary {
-                fn from(source: [u8; $N]) -> Self {
-                    // Implementation available for $N <= 64.
-                    // Requires https://caniuse.rs/features/vec_from_array available since Rust 1.44.0
-                    // as well as "Traits on larger arrays" (https://blog.rust-lang.org/2020/10/08/Rust-1.47.html#traits-on-larger-arrays)
-                    // available since Rust 1.47.0
-                    Self(source.into())
-                }
-            }
-        )+
+// Reference
+impl<const LENGTH: usize> From<&[u8; LENGTH]> for Binary {
+    fn from(source: &[u8; LENGTH]) -> Self {
+        Self(source.to_vec())
     }
 }
 
-implement_from_for_fixed_length_arrays! {
-     0  1  2  3  4  5  6  7  8  9
-    10 11 12 13 14 15 16 17 18 19
-    20 21 22 23 24 25 26 27 28 29
-    30 31 32 33 34 35 36 37 38 39
-    40 41 42 43 44 45 46 47 48 49
-    50 51 52 53 54 55 56 57 58 59
-    60 61 62 63 64
+// Owned
+impl<const LENGTH: usize> From<[u8; LENGTH]> for Binary {
+    fn from(source: [u8; LENGTH]) -> Self {
+        Self(source.into())
+    }
 }
 
 impl From<Vec<u8>> for Binary {
@@ -181,6 +160,34 @@ impl PartialEq<Binary> for &[u8] {
     }
 }
 
+/// Implement `Binary == &[u8; LENGTH]`
+impl<const LENGTH: usize> PartialEq<&[u8; LENGTH]> for Binary {
+    fn eq(&self, rhs: &&[u8; LENGTH]) -> bool {
+        self.as_slice() == rhs.as_slice()
+    }
+}
+
+/// Implement `&[u8; LENGTH] == Binary`
+impl<const LENGTH: usize> PartialEq<Binary> for &[u8; LENGTH] {
+    fn eq(&self, rhs: &Binary) -> bool {
+        self.as_slice() == rhs.as_slice()
+    }
+}
+
+/// Implement `Binary == [u8; LENGTH]`
+impl<const LENGTH: usize> PartialEq<[u8; LENGTH]> for Binary {
+    fn eq(&self, rhs: &[u8; LENGTH]) -> bool {
+        self.as_slice() == rhs.as_slice()
+    }
+}
+
+/// Implement `[u8; LENGTH] == Binary`
+impl<const LENGTH: usize> PartialEq<Binary> for [u8; LENGTH] {
+    fn eq(&self, rhs: &Binary) -> bool {
+        self.as_slice() == rhs.as_slice()
+    }
+}
+
 /// Serializes as a base64 string
 impl Serialize for Binary {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -221,32 +228,6 @@ impl<'de> de::Visitor<'de> for Base64Visitor {
     }
 }
 
-/// A marker trait for `[u8; $N]`, which is needed as long as
-/// https://rust-lang.github.io/rfcs/2000-const-generics.html is not stable.
-///
-/// Implementing this for other types (like Vec<u8>) results in undefined behaviour.
-pub unsafe trait ByteArray: Sized + AsMut<[u8]> {}
-
-// Macro needed until https://rust-lang.github.io/rfcs/2000-const-generics.html is stable.
-// See https://users.rust-lang.org/t/how-to-implement-trait-for-fixed-size-array-of-any-size/31494
-macro_rules! implement_fixes_size_arrays {
-    ($($N:literal)+) => {
-        $(
-            unsafe impl ByteArray for [u8; $N] {}
-        )+
-    }
-}
-
-implement_fixes_size_arrays! {
-     0  1  2  3  4  5  6  7  8  9
-    10 11 12 13 14 15 16 17 18 19
-    20 21 22 23 24 25 26 27 28 29
-    30 31 32 33 34 35 36 37 38 39
-    40 41 42 43 44 45 46 47 48 49
-    50 51 52 53 54 55 56 57 58 59
-    60 61 62 63 64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,7 +236,6 @@ mod tests {
     use std::collections::hash_map::DefaultHasher;
     use std::collections::HashSet;
     use std::hash::{Hash, Hasher};
-    use std::iter::FromIterator;
 
     #[test]
     fn encode_decode() {
@@ -289,7 +269,7 @@ mod tests {
 
         // invalid size
         let binary = Binary::from(&[1, 2, 3]);
-        let error = binary.to_array::<[u8; 8]>().unwrap_err();
+        let error = binary.to_array::<8>().unwrap_err();
         match error {
             StdError::InvalidDataSize {
                 expected, actual, ..
@@ -433,8 +413,7 @@ mod tests {
         let a: Binary = b"................................".into();
         assert_eq!(a.len(), 32);
 
-        // for length > 32 we need to cast
-        let a: Binary = (b"................................." as &[u8]).into();
+        let a: Binary = b".................................".into();
         assert_eq!(a.len(), 33);
     }
 
@@ -494,6 +473,17 @@ mod tests {
     }
 
     #[test]
+    fn binary_implements_debug() {
+        // Some data
+        let binary = Binary(vec![0x07, 0x35, 0xAA, 0xcb, 0x00, 0xff]);
+        assert_eq!(format!("{:?}", binary), "Binary(0735aacb00ff)",);
+
+        // Empty
+        let binary = Binary(vec![]);
+        assert_eq!(format!("{:?}", binary), "Binary()",);
+    }
+
+    #[test]
     fn binary_implements_deref() {
         // Dereference to [u8]
         let binary = Binary(vec![7u8, 35, 49, 101, 0, 255]);
@@ -541,7 +531,7 @@ mod tests {
         assert_eq!(set.len(), 2);
 
         let set1 = HashSet::<Binary>::from_iter(vec![b.clone(), a1.clone()]);
-        let set2 = HashSet::from_iter(vec![a1.clone(), a2.clone(), b.clone()]);
+        let set2 = HashSet::from_iter(vec![a1, a2, b]);
         assert_eq!(set1, set2);
     }
 
@@ -557,11 +547,25 @@ mod tests {
     }
 
     #[test]
-    fn binary_implements_partial_eq_with_slice() {
+    fn binary_implements_partial_eq_with_slice_and_array() {
         let a = Binary(vec![0xAA, 0xBB]);
+
+        // Slice: &[u8]
         assert_eq!(a, b"\xAA\xBB" as &[u8]);
         assert_eq!(b"\xAA\xBB" as &[u8], a);
         assert_ne!(a, b"\x11\x22" as &[u8]);
         assert_ne!(b"\x11\x22" as &[u8], a);
+
+        // Array reference: &[u8; 2]
+        assert_eq!(a, b"\xAA\xBB");
+        assert_eq!(b"\xAA\xBB", a);
+        assert_ne!(a, b"\x11\x22");
+        assert_ne!(b"\x11\x22", a);
+
+        // Array: [u8; 2]
+        assert_eq!(a, [0xAA, 0xBB]);
+        assert_eq!([0xAA, 0xBB], a);
+        assert_ne!(a, [0x11, 0x22]);
+        assert_ne!([0x11, 0x22], a);
     }
 }

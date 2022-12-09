@@ -1,11 +1,10 @@
-use digest::Digest; // trait
+use digest::{Digest, Update}; // trait
 use k256::{
     ecdsa::recoverable,
     ecdsa::signature::{DigestVerifier, Signature as _}, // traits
     ecdsa::{Signature, VerifyingKey},                   // type aliases
     elliptic_curve::sec1::ToEncodedPoint,
 };
-use std::convert::TryInto;
 
 use crate::errors::{CryptoError, CryptoResult};
 use crate::identity_digest::Identity256;
@@ -51,9 +50,9 @@ pub fn secp256k1_verify(
     let mut signature =
         Signature::from_bytes(&signature).map_err(|e| CryptoError::generic_err(e.to_string()))?;
     // Non low-S signatures require normalization
-    signature
-        .normalize_s()
-        .map_err(|e| CryptoError::generic_err(e.to_string()))?;
+    if let Some(normalized) = signature.normalize_s() {
+        signature = normalized;
+    }
 
     let public_key = VerifyingKey::from_sec1_bytes(public_key)
         .map_err(|e| CryptoError::generic_err(e.to_string()))?;
@@ -95,7 +94,7 @@ pub fn secp256k1_recover_pubkey(
     // Recover
     let message_digest = Identity256::new().chain(message_hash);
     let pubkey = extended_signature
-        .recover_verify_key_from_digest(message_digest)
+        .recover_verifying_key_from_digest(message_digest)
         .map_err(|e| CryptoError::generic_err(e.to_string()))?;
     let encoded: Vec<u8> = pubkey.to_encoded_point(false).as_bytes().into();
     Ok(encoded)
@@ -155,13 +154,12 @@ fn check_pubkey(data: &[u8]) -> Result<(), InvalidSecp256k1PubkeyFormat> {
 mod tests {
     use super::*;
 
-    use elliptic_curve::sec1::ToEncodedPoint;
-    use rand_core::OsRng;
-
     use hex_literal::hex;
     use k256::{
         ecdsa::signature::DigestSigner, // trait
         ecdsa::SigningKey,              // type alias
+        elliptic_curve::rand_core::OsRng,
+        elliptic_curve::sec1::ToEncodedPoint,
     };
     use sha2::Sha256;
 
@@ -260,7 +258,8 @@ mod tests {
             // secp256k1_verify works
             assert!(
                 secp256k1_verify(&message_hash, &signature, &public_key).unwrap(),
-                format!("secp256k1_verify() failed (test case {})", i)
+                "secp256k1_verify() failed (test case {})",
+                i
             );
         }
     }
@@ -301,7 +300,8 @@ mod tests {
             // secp256k1_verify() works
             assert!(
                 secp256k1_verify(&message_hash, &signature, &public_key).unwrap(),
-                format!("verify() failed (test case {})", i)
+                "verify() failed (test case {})",
+                i
             );
         }
     }
@@ -314,7 +314,7 @@ mod tests {
                 hex!("3c9229289a6125f7fdf1885a77bb12c37a8d3b4962d936f7e3084dece32a3ca1");
             let expected = SigningKey::from_bytes(&private_key)
                 .unwrap()
-                .verify_key()
+                .verifying_key()
                 .to_encoded_point(false)
                 .as_bytes()
                 .to_vec();

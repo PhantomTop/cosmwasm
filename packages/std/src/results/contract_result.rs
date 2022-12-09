@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// This is the final result type that is created and serialized in a contract for
-/// every init/handle/migrate call. The VM then deserializes this type to distinguish
+/// every init/execute/migrate call. The VM then deserializes this type to distinguish
 /// between successful and failed executions.
 ///
 /// We use a custom type here instead of Rust's Result because we want to be able to
@@ -18,7 +18,7 @@ use std::fmt;
 /// # use cosmwasm_std::{to_vec, ContractResult, Response};
 /// let response: Response = Response::default();
 /// let result: ContractResult<Response> = ContractResult::Ok(response);
-/// assert_eq!(to_vec(&result).unwrap(), br#"{"ok":{"messages":[],"attributes":[],"data":null}}"#.to_vec());
+/// assert_eq!(to_vec(&result).unwrap(), br#"{"ok":{"messages":[],"attributes":[],"events":[],"data":null}}"#);
 /// ```
 ///
 /// Failure:
@@ -27,9 +27,9 @@ use std::fmt;
 /// # use cosmwasm_std::{to_vec, ContractResult, Response};
 /// let error_msg = String::from("Something went wrong");
 /// let result: ContractResult<Response> = ContractResult::Err(error_msg);
-/// assert_eq!(to_vec(&result).unwrap(), br#"{"error":"Something went wrong"}"#.to_vec());
+/// assert_eq!(to_vec(&result).unwrap(), br#"{"error":"Something went wrong"}"#);
 /// ```
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ContractResult<S> {
     Ok(S),
@@ -50,6 +50,14 @@ impl<S> ContractResult<S> {
 
     pub fn unwrap(self) -> S {
         self.into_result().unwrap()
+    }
+
+    pub fn is_ok(&self) -> bool {
+        matches!(self, ContractResult::Ok(_))
+    }
+
+    pub fn is_err(&self) -> bool {
+        matches!(self, ContractResult::Err(_))
     }
 }
 
@@ -93,7 +101,7 @@ mod tests {
         let result: ContractResult<Response> = ContractResult::Ok(Response::default());
         assert_eq!(
             to_vec(&result).unwrap(),
-            br#"{"ok":{"messages":[],"attributes":[],"data":null}}"#.to_vec()
+            br#"{"ok":{"messages":[],"attributes":[],"events":[],"data":null}}"#
         );
 
         let result: ContractResult<Response> = ContractResult::Err("broken".to_string());
@@ -109,7 +117,8 @@ mod tests {
         assert_eq!(result, ContractResult::Ok("foo".to_string()));
 
         let result: ContractResult<Response> =
-            from_slice(br#"{"ok":{"messages":[],"attributes":[],"data":null}}"#).unwrap();
+            from_slice(br#"{"ok":{"messages":[],"attributes":[],"events":[],"data":null}}"#)
+                .unwrap();
         assert_eq!(result, ContractResult::Ok(Response::default()));
 
         let result: ContractResult<Response> = from_slice(br#"{"error":"broken"}"#).unwrap();
