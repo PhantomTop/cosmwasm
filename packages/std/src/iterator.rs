@@ -1,8 +1,10 @@
 use crate::errors::StdError;
-use std::convert::TryFrom;
 
-/// KV is a Key-Value pair, returned from our iterators
-pub type KV<T = Vec<u8>> = (Vec<u8>, T);
+/// A record of a key-value storage that is created through an iterator API.
+/// The first element (key) is always raw binary data. The second element
+/// (value) is binary by default but can be changed to a custom type. This
+/// allows contracts to reuse the type when deserializing database records.
+pub type Record<V = Vec<u8>> = (Vec<u8>, V);
 
 #[derive(Copy, Clone)]
 // We assign these to integers to provide a stable API for passing over FFI (to wasm and Go)
@@ -23,8 +25,8 @@ impl TryFrom<i32> for Order {
     }
 }
 
-impl Into<i32> for Order {
-    fn into(self) -> i32 {
-        self as i32
+impl From<Order> for i32 {
+    fn from(original: Order) -> i32 {
+        original as _
     }
 }

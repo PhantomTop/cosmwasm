@@ -1,12 +1,9 @@
-#![allow(clippy::field_reassign_with_default)] // see https://github.com/CosmWasm/cosmwasm/issues/685
+use cosmwasm_schema::{cw_serde, QueryResponses};
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use cosmwasm_std::{Coin, Decimal, Uint128};
 
-use cosmwasm_std::{Coin, Decimal, HumanAddr, Uint128};
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct InitMsg {
+#[cw_serde]
+pub struct InstantiateMsg {
     /// name of the derivative token (FIXME: auto-generate?)
     pub name: String,
     /// symbol / ticker of the derivative token
@@ -17,7 +14,7 @@ pub struct InitMsg {
     pub decimals: u8,
 
     /// This is the validator that all tokens will be bonded to
-    pub validator: HumanAddr,
+    pub validator: String,
 
     /// this is how much the owner takes as a cut when someone unbonds
     /// TODO
@@ -27,14 +24,10 @@ pub struct InitMsg {
     pub min_withdrawal: Uint128,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HandleMsg {
+#[cw_serde]
+pub enum ExecuteMsg {
     /// Transfer moves the derivative token
-    Transfer {
-        recipient: HumanAddr,
-        amount: Uint128,
-    },
+    Transfer { recipient: String, amount: Uint128 },
     /// Bond will bond all staking tokens sent with the message and release derivative tokens
     Bond {},
     /// Unbond will "burn" the given amount of derivative tokens and send the unbonded
@@ -53,33 +46,37 @@ pub enum HandleMsg {
     _BondAllTokens {},
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[cw_serde]
+#[derive(QueryResponses)]
 pub enum QueryMsg {
     /// Balance shows the number of staking derivatives
-    Balance { address: HumanAddr },
+    #[returns(BalanceResponse)]
+    Balance { address: String },
     /// Claims shows the number of tokens this address can access when they are done unbonding
-    Claims { address: HumanAddr },
+    #[returns(ClaimsResponse)]
+    Claims { address: String },
     /// TokenInfo shows the metadata of the token for UIs
+    #[returns(TokenInfoResponse)]
     TokenInfo {},
     /// Investment shows info on total staking tokens under custody,
     /// with which validator, as well as how many derivative tokens are lists.
     /// It also shows with the exit tax.
+    #[returns(InvestmentResponse)]
     Investment {},
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct BalanceResponse {
     pub balance: Uint128,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct ClaimsResponse {
     pub claims: Uint128,
 }
 
 /// TokenInfoResponse is info to display the derivative token in a UI
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct TokenInfoResponse {
     /// name of the derivative token
     pub name: String,
@@ -89,7 +86,7 @@ pub struct TokenInfoResponse {
     pub decimals: u8,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[cw_serde]
 pub struct InvestmentResponse {
     pub token_supply: Uint128,
     pub staked_tokens: Coin,
@@ -97,11 +94,11 @@ pub struct InvestmentResponse {
     pub nominal_value: Decimal,
 
     /// owner created the contract and takes a cut
-    pub owner: HumanAddr,
+    pub owner: String,
     /// this is how much the owner takes as a cut when someone unbonds
     pub exit_tax: Decimal,
     /// All tokens are bonded to this validator
-    pub validator: HumanAddr,
+    pub validator: String,
     /// This is the minimum amount we will pull out to reinvest, as well as a minumum
     /// that can be unbonded (to avoid needless staking tx)
     pub min_withdrawal: Uint128,

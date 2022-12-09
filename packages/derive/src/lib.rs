@@ -15,26 +15,26 @@ use std::str::FromStr;
 /// #     Response, QueryResponse,
 /// # };
 /// #
-/// # type InitMsg = ();
-/// # type HandleMsg = ();
+/// # type InstantiateMsg = ();
+/// # type ExecuteMsg = ();
 /// # type QueryMsg = ();
 ///
 /// #[entry_point]
-/// pub fn init(
+/// pub fn instantiate(
 ///     deps: DepsMut,
 ///     env: Env,
 ///     info: MessageInfo,
-///     msg: InitMsg,
+///     msg: InstantiateMsg,
 /// ) -> Result<Response, StdError> {
 /// #   Ok(Default::default())
 /// }
 ///
 /// #[entry_point]
-/// pub fn handle(
+/// pub fn execute(
 ///     deps: DepsMut,
 ///     env: Env,
 ///     info: MessageInfo,
-///     msg: HandleMsg,
+///     msg: ExecuteMsg,
 /// ) -> Result<Response, StdError> {
 /// #   Ok(Default::default())
 /// }
@@ -49,12 +49,8 @@ use std::str::FromStr;
 /// }
 /// ```
 ///
-/// where `InitMsg`, `HandleMsg`, and `QueryMsg` are contract defined
+/// where `InstantiateMsg`, `ExecuteMsg`, and `QueryMsg` are contract defined
 /// types that implement `DeserializeOwned + JsonSchema`.
-///
-/// This is an alternative implementation of `cosmwasm_std::create_entry_points!(contract)`
-/// and `cosmwasm_std::create_entry_points_with_migration!(contract)`
-/// and should not be used together.
 #[proc_macro_attribute]
 pub fn entry_point(_attr: TokenStream, mut item: TokenStream) -> TokenStream {
     let cloned = item.clone();

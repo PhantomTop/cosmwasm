@@ -1,167 +1,82 @@
-#![allow(clippy::field_reassign_with_default)] // see https://github.com/CosmWasm/cosmwasm/issues/685
-
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use cosmwasm_std::{
-    entry_point, from_slice, to_binary, to_vec, AllBalanceResponse, Api, BankMsg, Binary,
-    CanonicalAddr, Coin, Deps, DepsMut, Env, HumanAddr, MessageInfo, QueryRequest, QueryResponse,
-    Response, StdError, StdResult, WasmQuery,
+    entry_point, from_slice, to_binary, to_vec, Addr, AllBalanceResponse, Api, BankMsg,
+    CanonicalAddr, Deps, DepsMut, Env, Event, MessageInfo, QueryRequest, QueryResponse, Response,
+    StdError, StdResult, WasmMsg, WasmQuery,
 };
 
 use crate::errors::HackError;
+use crate::msg::{
+    ExecuteMsg, InstantiateMsg, IntResponse, MigrateMsg, QueryMsg, RecurseResponse, SudoMsg,
+    VerifierResponse,
+};
+use crate::state::{State, CONFIG_KEY};
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct InitMsg {
-    pub verifier: HumanAddr,
-    pub beneficiary: HumanAddr,
-}
-
-/// MigrateMsg allows a privileged contract administrator to run
-/// a migration on the contract. In this (demo) case it is just migrating
-/// from one hackatom code to the same code, but taking advantage of the
-/// migration step to set a new validator.
-///
-/// Note that the contract doesn't enforce permissions here, this is done
-/// by blockchain logic (in the future by blockchain governance)
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct MigrateMsg {
-    pub verifier: HumanAddr,
-}
-
-/// SystemMsg is only expose for internal sdk modules to call.
-/// This is showing how we can expose "admin" functionality than can not be called by
-/// external users or contracts, but only trusted (native/Go) code in the blockchain
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub enum SystemMsg {
-    StealFunds {
-        recipient: HumanAddr,
-        amount: Vec<Coin>,
-    },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct State {
-    pub verifier: CanonicalAddr,
-    pub beneficiary: CanonicalAddr,
-    pub funder: CanonicalAddr,
-}
-
-// failure modes to help test wasmd, based on this comment
-// https://github.com/cosmwasm/wasmd/issues/8#issuecomment-576146751
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HandleMsg {
-    /// Releasing all funds in the contract to the beneficiary. This is the only "proper" action of this demo contract.
-    Release {},
-    /// Infinite loop to burn cpu cycles (only run when metering is enabled)
-    CpuLoop {},
-    /// Infinite loop making storage calls (to test when their limit hits)
-    StorageLoop {},
-    /// Infinite loop reading and writing memory
-    MemoryLoop {},
-    /// Allocate large amounts of memory without consuming much gas
-    AllocateLargeMemory { pages: u32 },
-    /// Trigger a panic to ensure framework handles gracefully
-    Panic {},
-    /// Starting with CosmWasm 0.10, some API calls return user errors back to the contract.
-    /// This triggers such user errors, ensuring the transaction does not fail in the backend.
-    UserErrorsInApiCalls {},
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryMsg {
-    /// returns a human-readable representation of the verifier
-    /// use to ensure query path works in integration tests
-    Verifier {},
-    /// This returns cosmwasm_std::AllBalanceResponse to demo use of the querier
-    OtherBalance { address: HumanAddr },
-    /// Recurse will execute a query into itself up to depth-times and return
-    /// Each step of the recursion may perform some extra work to test gas metering
-    /// (`work` rounds of sha256 on contract).
-    /// Now that we have Env, we can auto-calculate the address to recurse into
-    Recurse { depth: u32, work: u32 },
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct VerifierResponse {
-    pub verifier: HumanAddr,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct RecurseResponse {
-    /// hashed is the result of running sha256 "work+1" times on the contract's human address
-    pub hashed: Binary,
-}
-
-pub const CONFIG_KEY: &[u8] = b"config";
-
-pub fn init(
+#[entry_point]
+pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
-    msg: InitMsg,
+    msg: InstantiateMsg,
 ) -> Result<Response, HackError> {
     deps.api.debug("here we go 🚀");
 
     deps.storage.set(
         CONFIG_KEY,
         &to_vec(&State {
-            verifier: deps.api.canonical_address(&msg.verifier)?,
-            beneficiary: deps.api.canonical_address(&msg.beneficiary)?,
-            funder: deps.api.canonical_address(&info.sender)?,
+            verifier: deps.api.addr_validate(&msg.verifier)?,
+            beneficiary: deps.api.addr_validate(&msg.beneficiary)?,
+            funder: info.sender,
         })?,
     );
 
     // This adds some unrelated event attribute for testing purposes
-    let mut resp = Response::new();
-    resp.add_attribute("Let the", "hacking begin");
-    Ok(resp)
+    Ok(Response::new().add_attribute("Let the", "hacking begin"))
 }
 
+#[entry_point]
 pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, HackError> {
     let data = deps
         .storage
         .get(CONFIG_KEY)
         .ok_or_else(|| StdError::not_found("State"))?;
     let mut config: State = from_slice(&data)?;
-    config.verifier = deps.api.canonical_address(&msg.verifier)?;
+    config.verifier = deps.api.addr_validate(&msg.verifier)?;
     deps.storage.set(CONFIG_KEY, &to_vec(&config)?);
 
     Ok(Response::default())
 }
 
 #[entry_point]
-pub fn system(_deps: DepsMut, _env: Env, msg: SystemMsg) -> Result<Response, HackError> {
+pub fn sudo(_deps: DepsMut, _env: Env, msg: SudoMsg) -> Result<Response, HackError> {
     match msg {
-        SystemMsg::StealFunds { recipient, amount } => {
+        SudoMsg::StealFunds { recipient, amount } => {
             let msg = BankMsg::Send {
                 to_address: recipient,
                 amount,
             };
-            let mut response = Response::default();
-            response.add_message(msg);
-            Ok(response)
+            Ok(Response::new().add_message(msg))
         }
     }
 }
 
-pub fn handle(
+#[entry_point]
+pub fn execute(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    msg: HandleMsg,
+    msg: ExecuteMsg,
 ) -> Result<Response, HackError> {
     match msg {
-        HandleMsg::Release {} => do_release(deps, env, info),
-        HandleMsg::CpuLoop {} => do_cpu_loop(),
-        HandleMsg::StorageLoop {} => do_storage_loop(deps),
-        HandleMsg::MemoryLoop {} => do_memory_loop(),
-        HandleMsg::AllocateLargeMemory { pages } => do_allocate_large_memory(pages),
-        HandleMsg::Panic {} => do_panic(),
-        HandleMsg::UserErrorsInApiCalls {} => do_user_errors_in_api_calls(deps.api),
+        ExecuteMsg::Release {} => do_release(deps, env, info),
+        ExecuteMsg::CpuLoop {} => do_cpu_loop(),
+        ExecuteMsg::StorageLoop {} => do_storage_loop(deps),
+        ExecuteMsg::MemoryLoop {} => do_memory_loop(),
+        ExecuteMsg::MessageLoop {} => do_message_loop(env),
+        ExecuteMsg::AllocateLargeMemory { pages } => do_allocate_large_memory(pages),
+        ExecuteMsg::Panic {} => do_panic(),
+        ExecuteMsg::UserErrorsInApiCalls {} => do_user_errors_in_api_calls(deps.api),
     }
 }
 
@@ -172,18 +87,19 @@ fn do_release(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, Ha
         .ok_or_else(|| StdError::not_found("State"))?;
     let state: State = from_slice(&data)?;
 
-    if deps.api.canonical_address(&info.sender)? == state.verifier {
-        let to_addr = deps.api.human_address(&state.beneficiary)?;
-        let balance = deps.querier.query_all_balances(&env.contract.address)?;
+    if info.sender == state.verifier {
+        let to_addr = state.beneficiary;
+        let balance = deps.querier.query_all_balances(env.contract.address)?;
 
-        let mut resp = Response::new();
-        resp.add_attribute("action", "release");
-        resp.add_attribute("destination", to_addr.clone());
-        resp.add_message(BankMsg::Send {
-            to_address: to_addr,
-            amount: balance,
-        });
-        resp.set_data(&[0xF0, 0x0B, 0xAA]);
+        let resp = Response::new()
+            .add_attribute("action", "release")
+            .add_attribute("destination", to_addr.clone())
+            .add_event(Event::new("hackatom").add_attribute("action", "release"))
+            .add_message(BankMsg::Send {
+                to_address: to_addr.into(),
+                amount: balance,
+            })
+            .set_data([0xF0, 0x0B, 0xAA]);
         Ok(resp)
     } else {
         Err(HackError::Unauthorized {})
@@ -217,6 +133,15 @@ fn do_memory_loop() -> Result<Response, HackError> {
     }
 }
 
+fn do_message_loop(env: Env) -> Result<Response, HackError> {
+    let resp = Response::new().add_message(WasmMsg::Execute {
+        contract_addr: env.contract.address.into(),
+        msg: to_binary(&ExecuteMsg::MessageLoop {})?,
+        funds: vec![],
+    });
+    Ok(resp)
+}
+
 #[allow(unused_variables)]
 fn do_allocate_large_memory(pages: u32) -> Result<Response, HackError> {
     // We create memory pages explicitely since Rust's default allocator seems to be clever enough
@@ -230,10 +155,7 @@ fn do_allocate_large_memory(pages: u32) -> Result<Response, HackError> {
         if old_size == usize::max_value() {
             return Err(StdError::generic_err("memory.grow failed").into());
         }
-        Ok(Response {
-            data: Some((old_size as u32).to_be_bytes().into()),
-            ..Response::default()
-        })
+        Ok(Response::new().set_data((old_size as u32).to_be_bytes()))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -241,14 +163,29 @@ fn do_allocate_large_memory(pages: u32) -> Result<Response, HackError> {
 }
 
 fn do_panic() -> Result<Response, HackError> {
+    // Uncomment your favourite panic case
+
+    // panicked at 'This page intentionally faulted', src/contract.rs:53:5
     panic!("This page intentionally faulted");
+
+    // panicked at 'oh no (a = 3)', src/contract.rs:56:5
+    // let a = 3;
+    // panic!("oh no (a = {a})");
+
+    // panicked at 'attempt to subtract with overflow', src/contract.rs:59:13
+    // #[allow(arithmetic_overflow)]
+    // let _ = 5u32 - 8u32;
+
+    // panicked at 'no entry found for key', src/contract.rs:62:13
+    // let map = std::collections::HashMap::<String, String>::new();
+    // let _ = map["foo"];
 }
 
 fn do_user_errors_in_api_calls(api: &dyn Api) -> Result<Response, HackError> {
     // Canonicalize
 
-    let empty = HumanAddr::from("");
-    match api.canonical_address(&empty).unwrap_err() {
+    let empty = "";
+    match api.addr_canonicalize(empty).unwrap_err() {
         StdError::GenericErr { .. } => {}
         err => {
             return Err(StdError::generic_err(format!(
@@ -259,8 +196,9 @@ fn do_user_errors_in_api_calls(api: &dyn Api) -> Result<Response, HackError> {
         }
     }
 
-    let invalid_bech32 = HumanAddr::from("bn93hg934hg08q340g8u4jcau3");
-    match api.canonical_address(&invalid_bech32).unwrap_err() {
+    let invalid_bech32 =
+        "bn9hhssomeltvhzgvuqkwjkpwxojfuigltwedayzxljucefikuieillowaticksoistqoynmgcnj219a";
+    match api.addr_canonicalize(invalid_bech32).unwrap_err() {
         StdError::GenericErr { .. } => {}
         err => {
             return Err(StdError::generic_err(format!(
@@ -274,7 +212,7 @@ fn do_user_errors_in_api_calls(api: &dyn Api) -> Result<Response, HackError> {
     // Humanize
 
     let empty: CanonicalAddr = vec![].into();
-    match api.human_address(&empty).unwrap_err() {
+    match api.addr_humanize(&empty).unwrap_err() {
         StdError::GenericErr { .. } => {}
         err => {
             return Err(StdError::generic_err(format!(
@@ -286,7 +224,7 @@ fn do_user_errors_in_api_calls(api: &dyn Api) -> Result<Response, HackError> {
     }
 
     let too_short: CanonicalAddr = vec![0xAA, 0xBB, 0xCC].into();
-    match api.human_address(&too_short).unwrap_err() {
+    match api.addr_humanize(&too_short).unwrap_err() {
         StdError::GenericErr { .. } => {}
         err => {
             return Err(StdError::generic_err(format!(
@@ -298,7 +236,7 @@ fn do_user_errors_in_api_calls(api: &dyn Api) -> Result<Response, HackError> {
     }
 
     let wrong_length: CanonicalAddr = vec![0xA6; 17].into();
-    match api.human_address(&wrong_length).unwrap_err() {
+    match api.addr_humanize(&wrong_length).unwrap_err() {
         StdError::GenericErr { .. } => {}
         err => {
             return Err(StdError::generic_err(format!(
@@ -312,6 +250,7 @@ fn do_user_errors_in_api_calls(api: &dyn Api) -> Result<Response, HackError> {
     Ok(Response::default())
 }
 
+#[entry_point]
 pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<QueryResponse> {
     match msg {
         QueryMsg::Verifier {} => to_binary(&query_verifier(deps)?),
@@ -319,6 +258,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<QueryResponse> {
         QueryMsg::Recurse { depth, work } => {
             to_binary(&query_recurse(deps, depth, work, env.contract.address)?)
         }
+        QueryMsg::GetInt {} => to_binary(&query_int()),
     }
 }
 
@@ -328,23 +268,19 @@ fn query_verifier(deps: Deps) -> StdResult<VerifierResponse> {
         .get(CONFIG_KEY)
         .ok_or_else(|| StdError::not_found("State"))?;
     let state: State = from_slice(&data)?;
-    let addr = deps.api.human_address(&state.verifier)?;
-    Ok(VerifierResponse { verifier: addr })
+    Ok(VerifierResponse {
+        verifier: state.verifier.into(),
+    })
 }
 
-fn query_other_balance(deps: Deps, address: HumanAddr) -> StdResult<AllBalanceResponse> {
+fn query_other_balance(deps: Deps, address: String) -> StdResult<AllBalanceResponse> {
     let amount = deps.querier.query_all_balances(address)?;
     Ok(AllBalanceResponse { amount })
 }
 
-fn query_recurse(
-    deps: Deps,
-    depth: u32,
-    work: u32,
-    contract: HumanAddr,
-) -> StdResult<RecurseResponse> {
+fn query_recurse(deps: Deps, depth: u32, work: u32, contract: Addr) -> StdResult<RecurseResponse> {
     // perform all hashes as requested
-    let mut hashed: Vec<u8> = contract.as_str().as_bytes().to_vec();
+    let mut hashed: Vec<u8> = contract.as_str().into();
     for _ in 0..work {
         hashed = Sha256::digest(&hashed).to_vec()
     }
@@ -361,11 +297,15 @@ fn query_recurse(
             work,
         };
         let query = QueryRequest::Wasm(WasmQuery::Smart {
-            contract_addr: contract,
+            contract_addr: contract.into(),
             msg: to_binary(&req)?,
         });
         deps.querier.query(&query)
     }
+}
+
+fn query_int() -> IntResponse {
+    IntResponse { int: 0xf00baa }
 }
 
 #[cfg(test)]
@@ -375,31 +315,29 @@ mod tests {
         mock_dependencies, mock_dependencies_with_balances, mock_env, mock_info, MOCK_CONTRACT_ADDR,
     };
     // import trait Storage to get access to read
-    use cosmwasm_std::{attr, coins, Storage};
+    use cosmwasm_std::{coins, Binary, Storage, SubMsg};
 
     #[test]
     fn proper_initialization() {
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
 
-        let verifier = HumanAddr(String::from("verifies"));
-        let beneficiary = HumanAddr(String::from("benefits"));
-        let creator = HumanAddr(String::from("creator"));
+        let verifier = String::from("verifies");
+        let beneficiary = String::from("benefits");
+        let creator = String::from("creator");
         let expected_state = State {
-            verifier: deps.api.canonical_address(&verifier).unwrap(),
-            beneficiary: deps.api.canonical_address(&beneficiary).unwrap(),
-            funder: deps.api.canonical_address(&creator).unwrap(),
+            verifier: deps.api.addr_validate(&verifier).unwrap(),
+            beneficiary: deps.api.addr_validate(&beneficiary).unwrap(),
+            funder: deps.api.addr_validate(&creator).unwrap(),
         };
 
-        let msg = InitMsg {
+        let msg = InstantiateMsg {
             verifier,
             beneficiary,
         };
         let info = mock_info(creator.as_str(), &[]);
-        let res = init(deps.as_mut(), mock_env(), info, msg).unwrap();
+        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(res.messages.len(), 0);
-        assert_eq!(res.attributes.len(), 1);
-        assert_eq!(res.attributes[0].key, "Let the");
-        assert_eq!(res.attributes[0].value, "hacking begin");
+        assert_eq!(res.attributes, [("Let the", "hacking begin")]);
 
         // it worked, let's check the state
         let data = deps.storage.get(CONFIG_KEY).expect("no data stored");
@@ -408,18 +346,18 @@ mod tests {
     }
 
     #[test]
-    fn init_and_query() {
-        let mut deps = mock_dependencies(&[]);
+    fn instantiate_and_query() {
+        let mut deps = mock_dependencies();
 
-        let verifier = HumanAddr(String::from("verifies"));
-        let beneficiary = HumanAddr(String::from("benefits"));
-        let creator = HumanAddr(String::from("creator"));
-        let msg = InitMsg {
+        let verifier = String::from("verifies");
+        let beneficiary = String::from("benefits");
+        let creator = String::from("creator");
+        let msg = InstantiateMsg {
             verifier: verifier.clone(),
             beneficiary,
         };
-        let info = mock_info(creator.as_str(), &[]);
-        let res = init(deps.as_mut(), mock_env(), info, msg).unwrap();
+        let info = mock_info(&creator, &[]);
+        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
 
         // now let's query
@@ -429,17 +367,17 @@ mod tests {
 
     #[test]
     fn migrate_verifier() {
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
 
-        let verifier = HumanAddr::from("verifies");
-        let beneficiary = HumanAddr::from("benefits");
-        let creator = HumanAddr::from("creator");
-        let msg = InitMsg {
+        let verifier = String::from("verifies");
+        let beneficiary = String::from("benefits");
+        let creator = String::from("creator");
+        let msg = InstantiateMsg {
             verifier,
             beneficiary,
         };
-        let info = mock_info(creator.as_str(), &[]);
-        let res = init(deps.as_mut(), mock_env(), info, msg).unwrap();
+        let info = mock_info(&creator, &[]);
+        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
 
         // check it is 'verifies'
@@ -447,7 +385,7 @@ mod tests {
         assert_eq!(query_response.as_slice(), b"{\"verifier\":\"verifies\"}");
 
         // change the verifier via migrate
-        let new_verifier = HumanAddr::from("someone else");
+        let new_verifier = String::from("someone else");
         let msg = MigrateMsg {
             verifier: new_verifier.clone(),
         };
@@ -460,36 +398,36 @@ mod tests {
     }
 
     #[test]
-    fn system_can_steal_tokens() {
-        let mut deps = mock_dependencies(&[]);
+    fn sudo_can_steal_tokens() {
+        let mut deps = mock_dependencies();
 
-        let verifier = HumanAddr::from("verifies");
-        let beneficiary = HumanAddr::from("benefits");
-        let creator = HumanAddr::from("creator");
-        let msg = InitMsg {
+        let verifier = String::from("verifies");
+        let beneficiary = String::from("benefits");
+        let creator = String::from("creator");
+        let msg = InstantiateMsg {
             verifier,
             beneficiary,
         };
-        let info = mock_info(creator.as_str(), &[]);
-        let res = init(deps.as_mut(), mock_env(), info, msg).unwrap();
+        let info = mock_info(&creator, &[]);
+        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
 
-        // system takes any tax it wants
-        let to_address = HumanAddr::from("community-pool");
+        // sudo takes any tax it wants
+        let to_address = String::from("community-pool");
         let amount = coins(700, "gold");
-        let sys_msg = SystemMsg::StealFunds {
+        let sys_msg = SudoMsg::StealFunds {
             recipient: to_address.clone(),
             amount: amount.clone(),
         };
-        let res = system(deps.as_mut(), mock_env(), sys_msg).unwrap();
+        let res = sudo(deps.as_mut(), mock_env(), sys_msg).unwrap();
         assert_eq!(1, res.messages.len());
         let msg = res.messages.get(0).expect("no message");
-        assert_eq!(msg, &BankMsg::Send { to_address, amount }.into(),);
+        assert_eq!(msg, &SubMsg::new(BankMsg::Send { to_address, amount }));
     }
 
     #[test]
     fn querier_callbacks_work() {
-        let rich_addr = HumanAddr::from("foobar");
+        let rich_addr = String::from("foobar");
         let rich_balance = coins(10000, "gold");
         let deps = mock_dependencies_with_balances(&[(&rich_addr, &rich_balance)]);
 
@@ -498,87 +436,86 @@ mod tests {
         assert_eq!(bal.amount, rich_balance);
 
         // querying other accounts gets none
-        let bal = query_other_balance(deps.as_ref(), HumanAddr::from("someone else")).unwrap();
+        let bal = query_other_balance(deps.as_ref(), String::from("someone else")).unwrap();
         assert_eq!(bal.amount, vec![]);
     }
 
     #[test]
-    fn handle_release_works() {
-        let mut deps = mock_dependencies(&[]);
+    fn execute_release_works() {
+        let mut deps = mock_dependencies();
 
         // initialize the store
-        let creator = HumanAddr::from("creator");
-        let verifier = HumanAddr::from("verifies");
-        let beneficiary = HumanAddr::from("benefits");
+        let creator = String::from("creator");
+        let verifier = String::from("verifies");
+        let beneficiary = String::from("benefits");
 
-        let init_msg = InitMsg {
+        let instantiate_msg = InstantiateMsg {
             verifier: verifier.clone(),
             beneficiary: beneficiary.clone(),
         };
         let init_amount = coins(1000, "earth");
-        let init_info = mock_info(creator.as_str(), &init_amount);
-        let init_res = init(deps.as_mut(), mock_env(), init_info, init_msg).unwrap();
+        let init_info = mock_info(&creator, &init_amount);
+        let init_res = instantiate(deps.as_mut(), mock_env(), init_info, instantiate_msg).unwrap();
         assert_eq!(init_res.messages.len(), 0);
 
         // balance changed in init
         deps.querier.update_balance(MOCK_CONTRACT_ADDR, init_amount);
 
         // beneficiary can release it
-        let handle_info = mock_info(verifier.as_str(), &[]);
-        let handle_res = handle(
+        let execute_info = mock_info(verifier.as_str(), &[]);
+        let execute_res = execute(
             deps.as_mut(),
             mock_env(),
-            handle_info,
-            HandleMsg::Release {},
+            execute_info,
+            ExecuteMsg::Release {},
         )
         .unwrap();
-        assert_eq!(handle_res.messages.len(), 1);
-        let msg = handle_res.messages.get(0).expect("no message");
+        assert_eq!(execute_res.messages.len(), 1);
+        let msg = execute_res.messages.get(0).expect("no message");
         assert_eq!(
             msg,
-            &BankMsg::Send {
+            &SubMsg::new(BankMsg::Send {
                 to_address: beneficiary,
                 amount: coins(1000, "earth"),
-            }
-            .into(),
+            }),
         );
         assert_eq!(
-            handle_res.attributes,
-            vec![attr("action", "release"), attr("destination", "benefits")],
+            execute_res.attributes,
+            vec![("action", "release"), ("destination", "benefits")],
         );
-        assert_eq!(handle_res.data, Some(vec![0xF0, 0x0B, 0xAA].into()));
+        assert_eq!(execute_res.data, Some(vec![0xF0, 0x0B, 0xAA].into()));
     }
 
     #[test]
-    fn handle_release_fails_for_wrong_sender() {
-        let mut deps = mock_dependencies(&[]);
+    fn execute_release_fails_for_wrong_sender() {
+        let mut deps = mock_dependencies();
 
         // initialize the store
-        let creator = HumanAddr::from("creator");
-        let verifier = HumanAddr::from("verifies");
-        let beneficiary = HumanAddr::from("benefits");
+        let creator = String::from("creator");
+        let verifier = String::from("verifies");
+        let beneficiary = String::from("benefits");
 
-        let init_msg = InitMsg {
+        let instantiate_msg = InstantiateMsg {
             verifier: verifier.clone(),
             beneficiary: beneficiary.clone(),
         };
         let init_amount = coins(1000, "earth");
-        let init_info = mock_info(creator.as_str(), &init_amount);
-        let init_res = init(deps.as_mut(), mock_env(), init_info, init_msg).unwrap();
+        let init_info = mock_info(&creator, &init_amount);
+        let init_res = instantiate(deps.as_mut(), mock_env(), init_info, instantiate_msg).unwrap();
         assert_eq!(init_res.messages.len(), 0);
 
         // balance changed in init
         deps.querier.update_balance(MOCK_CONTRACT_ADDR, init_amount);
 
         // beneficiary cannot release it
-        let handle_info = mock_info(beneficiary.as_str(), &[]);
-        let handle_res = handle(
+        let execute_info = mock_info(beneficiary.as_str(), &[]);
+        let execute_res = execute(
             deps.as_mut(),
             mock_env(),
-            handle_info,
-            HandleMsg::Release {},
+            execute_info,
+            ExecuteMsg::Release {},
         );
-        assert_eq!(handle_res.unwrap_err(), HackError::Unauthorized {});
+        assert_eq!(execute_res.unwrap_err(), HackError::Unauthorized {});
 
         // state should not change
         let data = deps.storage.get(CONFIG_KEY).expect("no data stored");
@@ -586,54 +523,59 @@ mod tests {
         assert_eq!(
             state,
             State {
-                verifier: deps.api.canonical_address(&verifier).unwrap(),
-                beneficiary: deps.api.canonical_address(&beneficiary).unwrap(),
-                funder: deps.api.canonical_address(&creator).unwrap(),
+                verifier: Addr::unchecked(verifier),
+                beneficiary: Addr::unchecked(beneficiary),
+                funder: Addr::unchecked(creator),
             }
         );
     }
 
     #[test]
     #[should_panic(expected = "This page intentionally faulted")]
-    fn handle_panic() {
-        let mut deps = mock_dependencies(&[]);
+    fn execute_panic() {
+        let mut deps = mock_dependencies();
 
         // initialize the store
-        let verifier = HumanAddr(String::from("verifies"));
-        let beneficiary = HumanAddr(String::from("benefits"));
-        let creator = HumanAddr(String::from("creator"));
+        let verifier = String::from("verifies");
+        let beneficiary = String::from("benefits");
+        let creator = String::from("creator");
 
-        let init_msg = InitMsg {
+        let instantiate_msg = InstantiateMsg {
             verifier,
             beneficiary: beneficiary.clone(),
         };
-        let init_info = mock_info(creator.as_str(), &coins(1000, "earth"));
-        let init_res = init(deps.as_mut(), mock_env(), init_info, init_msg).unwrap();
+        let init_info = mock_info(&creator, &coins(1000, "earth"));
+        let init_res = instantiate(deps.as_mut(), mock_env(), init_info, instantiate_msg).unwrap();
         assert_eq!(0, init_res.messages.len());
 
-        let handle_info = mock_info(beneficiary.as_str(), &[]);
+        let execute_info = mock_info(&beneficiary, &[]);
         // this should panic
-        let _ = handle(deps.as_mut(), mock_env(), handle_info, HandleMsg::Panic {});
+        let _ = execute(
+            deps.as_mut(),
+            mock_env(),
+            execute_info,
+            ExecuteMsg::Panic {},
+        );
     }
 
     #[test]
-    fn handle_user_errors_in_api_calls() {
-        let mut deps = mock_dependencies(&[]);
+    fn execute_user_errors_in_api_calls() {
+        let mut deps = mock_dependencies();
 
-        let init_msg = InitMsg {
-            verifier: HumanAddr::from("verifies"),
-            beneficiary: HumanAddr::from("benefits"),
+        let instantiate_msg = InstantiateMsg {
+            verifier: String::from("verifies"),
+            beneficiary: String::from("benefits"),
         };
         let init_info = mock_info("creator", &coins(1000, "earth"));
-        let init_res = init(deps.as_mut(), mock_env(), init_info, init_msg).unwrap();
+        let init_res = instantiate(deps.as_mut(), mock_env(), init_info, instantiate_msg).unwrap();
         assert_eq!(0, init_res.messages.len());
 
-        let handle_info = mock_info("anyone", &[]);
-        handle(
+        let execute_info = mock_info("anyone", &[]);
+        execute(
             deps.as_mut(),
             mock_env(),
-            handle_info,
-            HandleMsg::UserErrorsInApiCalls {},
+            execute_info,
+            ExecuteMsg::UserErrorsInApiCalls {},
         )
         .unwrap();
     }
@@ -643,8 +585,8 @@ mod tests {
         // the test framework doesn't handle contracts querying contracts yet,
         // let's just make sure the last step looks right
 
-        let deps = mock_dependencies(&[]);
-        let contract = HumanAddr::from("my-contract");
+        let deps = mock_dependencies();
+        let contract = Addr::unchecked("my-contract");
         let bin_contract: &[u8] = b"my-contract";
 
         // return the unhashed value here
@@ -654,9 +596,15 @@ mod tests {
         // let's see if 5 hashes are done right
         let mut expected_hash = Sha256::digest(bin_contract);
         for _ in 0..4 {
-            expected_hash = Sha256::digest(&expected_hash);
+            expected_hash = Sha256::digest(expected_hash);
         }
         let work_query = query_recurse(deps.as_ref(), 0, 5, contract).unwrap();
         assert_eq!(work_query.hashed, expected_hash.to_vec());
+    }
+
+    #[test]
+    fn get_int() {
+        let get_int_query = query_int();
+        assert_eq!(get_int_query.int, 0xf00baa);
     }
 }

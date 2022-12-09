@@ -7,8 +7,8 @@ use serde::Deserialize;
 
 // Crypto stuff
 use digest::Digest;
-use elliptic_curve::sec1::ToEncodedPoint;
 use k256::ecdsa::SigningKey; // type alias
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use sha2::Sha256;
 
 use cosmwasm_crypto::{
@@ -32,6 +32,7 @@ const COSMOS_ED25519_TESTS_JSON: &str = "./testdata/ed25519_tests.json";
 #[derive(Deserialize, Debug)]
 struct Encoded {
     #[serde(rename = "privkey")]
+    #[allow(dead_code)]
     private_key: String,
     #[serde(rename = "pubkey")]
     public_key: String,
@@ -50,6 +51,7 @@ fn read_cosmos_sigs() -> Vec<Encoded> {
     serde_json::from_reader(reader).unwrap()
 }
 
+#[allow(clippy::type_complexity)]
 fn read_decode_cosmos_sigs() -> (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let codes = read_cosmos_sigs();
 
@@ -94,7 +96,7 @@ fn bench_crypto(c: &mut Criterion) {
 
         let expected = SigningKey::from_bytes(&private_key)
             .unwrap()
-            .verify_key()
+            .verifying_key()
             .to_encoded_point(false)
             .as_bytes()
             .to_vec();

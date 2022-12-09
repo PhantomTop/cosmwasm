@@ -2,7 +2,6 @@
 //! which can potientially have abusive size.
 
 use std::collections::{BTreeSet, HashSet};
-use std::iter::FromIterator;
 
 pub trait LimitedDisplay {
     /// Returns a string representationof the object, which is shorter than or equal to `max_length`.
@@ -99,15 +98,13 @@ mod tests {
         assert_eq!(set.to_string_limited(20), "{}");
         assert_eq!(set.to_string_limited(2), "{}");
 
-        let fruits = BTreeSet::from_iter(
-            [
-                "watermelon".to_string(),
-                "apple".to_string(),
-                "banana".to_string(),
-            ]
-            .iter()
-            .cloned(),
-        );
+        let fruits: BTreeSet<String> = [
+            "watermelon".to_string(),
+            "apple".to_string(),
+            "banana".to_string(),
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(
             fruits.to_string_limited(100),
             "{\"apple\", \"banana\", \"watermelon\"}"
@@ -137,15 +134,13 @@ mod tests {
         assert_eq!(set.to_string_limited(20), "{}");
         assert_eq!(set.to_string_limited(2), "{}");
 
-        let fruits = HashSet::from_iter(
-            [
-                "watermelon".to_string(),
-                "apple".to_string(),
-                "banana".to_string(),
-            ]
-            .iter()
-            .cloned(),
-        );
+        let fruits: HashSet<String> = [
+            "watermelon".to_string(),
+            "apple".to_string(),
+            "banana".to_string(),
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(
             fruits.to_string_limited(100),
             "{\"apple\", \"banana\", \"watermelon\"}"
@@ -178,15 +173,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "Cannot remove hide enough elements to fit in length limit.")]
     fn panics_if_limit_is_too_small_nonempty() {
-        let fruits = HashSet::from_iter(
-            [
-                "watermelon".to_string(),
-                "apple".to_string(),
-                "banana".to_string(),
-            ]
-            .iter()
-            .cloned(),
-        );
+        let fruits: HashSet<String> = [
+            "watermelon".to_string(),
+            "apple".to_string(),
+            "banana".to_string(),
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(fruits.to_string_limited(15), "{... 3 elements}");
     }
 

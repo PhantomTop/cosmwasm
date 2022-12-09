@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 
 use cosmwasm_std::testing::{MockQuerier as StdMockQuerier, MockQuerierCustomHandlerResult};
 use cosmwasm_std::{
-    to_binary, to_vec, Binary, Coin, ContractResult, CustomQuery, Empty, HumanAddr, Querier as _,
+    to_binary, to_vec, Binary, Coin, ContractResult, CustomQuery, Empty, Querier as _,
     QueryRequest, SystemError, SystemResult,
 };
 
@@ -15,22 +15,21 @@ const GAS_COST_QUERY_REQUEST_MULTIPLIER: u64 = 0;
 const GAS_COST_QUERY_RESPONSE_MULTIPLIER: u64 = 100;
 
 /// MockQuerier holds an immutable table of bank balances
-/// TODO: also allow querying contracts
 pub struct MockQuerier<C: CustomQuery + DeserializeOwned = Empty> {
     querier: StdMockQuerier<C>,
 }
 
 impl<C: CustomQuery + DeserializeOwned> MockQuerier<C> {
-    pub fn new(balances: &[(&HumanAddr, &[Coin])]) -> Self {
+    pub fn new(balances: &[(&str, &[Coin])]) -> Self {
         MockQuerier {
             querier: StdMockQuerier::new(balances),
         }
     }
 
     // set a new balance for the given address and return the old balance
-    pub fn update_balance<U: Into<HumanAddr>>(
+    pub fn update_balance(
         &mut self,
-        addr: U,
+        addr: impl Into<String>,
         balance: Vec<Coin>,
     ) -> Option<Vec<Coin>> {
         self.querier.update_balance(addr, balance)
@@ -44,6 +43,13 @@ impl<C: CustomQuery + DeserializeOwned> MockQuerier<C> {
         delegations: &[cosmwasm_std::FullDelegation],
     ) {
         self.querier.update_staking(denom, validators, delegations);
+    }
+
+    pub fn update_wasm<WH: 'static>(&mut self, handler: WH)
+    where
+        WH: Fn(&cosmwasm_std::WasmQuery) -> cosmwasm_std::QuerierResult,
+    {
+        self.querier.update_wasm(handler)
     }
 
     pub fn with_custom_handler<CH: 'static>(mut self, handler: CH) -> Self
@@ -113,7 +119,7 @@ mod tests {
 
     #[test]
     fn query_raw_fails_when_out_of_gas() {
-        let addr = HumanAddr::from("foobar");
+        let addr = String::from("foobar");
         let balance = vec![coin(123, "ELF"), coin(777, "FLY")];
         let querier: MockQuerier<Empty> = MockQuerier::new(&[(&addr, &balance)]);
 
@@ -127,17 +133,14 @@ mod tests {
 
     #[test]
     fn bank_querier_all_balances() {
-        let addr = HumanAddr::from("foobar");
+        let addr = String::from("foobar");
         let balance = vec![coin(123, "ELF"), coin(777, "FLY")];
         let querier = MockQuerier::new(&[(&addr, &balance)]);
 
         // all
         let all = querier
             .query::<Empty>(
-                &BankQuery::AllBalances {
-                    address: addr.clone(),
-                }
-                .into(),
+                &BankQuery::AllBalances { address: addr }.into(),
                 DEFAULT_QUERY_GAS_LIMIT,
             )
             .0
@@ -150,7 +153,7 @@ mod tests {
 
     #[test]
     fn bank_querier_one_balance() {
-        let addr = HumanAddr::from("foobar");
+        let addr = String::from("foobar");
         let balance = vec![coin(123, "ELF"), coin(777, "FLY")];
         let querier = MockQuerier::new(&[(&addr, &balance)]);
 
@@ -175,7 +178,7 @@ mod tests {
         let miss = querier
             .query::<Empty>(
                 &BankQuery::Balance {
-                    address: addr.clone(),
+                    address: addr,
                     denom: "MISS".to_string(),
                 }
                 .into(),
@@ -191,7 +194,7 @@ mod tests {
 
     #[test]
     fn bank_querier_missing_account() {
-        let addr = HumanAddr::from("foobar");
+        let addr = String::from("foobar");
         let balance = vec![coin(123, "ELF"), coin(777, "FLY")];
         let querier = MockQuerier::new(&[(&addr, &balance)]);
 
@@ -199,7 +202,7 @@ mod tests {
         let all = querier
             .query::<Empty>(
                 &BankQuery::AllBalances {
-                    address: HumanAddr::from("elsewhere"),
+                    address: String::from("elsewhere"),
                 }
                 .into(),
                 DEFAULT_QUERY_GAS_LIMIT,
@@ -215,7 +218,7 @@ mod tests {
         let miss = querier
             .query::<Empty>(
                 &BankQuery::Balance {
-                    address: HumanAddr::from("elsewhere"),
+                    address: String::from("elsewhere"),
                     denom: "ELF".to_string(),
                 }
                 .into(),
