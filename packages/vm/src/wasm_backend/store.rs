@@ -1,12 +1,12 @@
 use std::sync::Arc;
-#[cfg(feature = "cranelift")]
-use wasmer::Cranelift;
 #[cfg(not(feature = "cranelift"))]
 use wasmer::Singlepass;
 use wasmer::{
     wasmparser::Operator, BaseTunables, CompilerConfig, Engine, ModuleMiddleware, Pages, Store,
     Target, Universal, WASM_PAGE_SIZE,
 };
+#[cfg(feature = "cranelift")]
+use wasmer::{Cranelift, CraneliftOptLevel};
 use wasmer_middlewares::Metering;
 
 use crate::size::Size;
